@@ -1,0 +1,32 @@
+# Node
+node_modules/
+dist/
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+
+# DB
+*.sqlite
+*.db
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+frontend.zip
+update_caddy.py
+/*.py
+/*.log
+/*.zip
+/*.tmp
+backend/.env
+backend/uploads/

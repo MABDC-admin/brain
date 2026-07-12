@@ -1,0 +1,350 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Search, FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, MoreVertical, X, Lock, Unlock, Zap, ChevronRight, MessageSquare, Mic, Share } from 'lucide-react';
+import { useHaptic } from '../hooks/useHaptic.js';
+import SwipeableRow from '../components/SwipeableRow.jsx';
+
+const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
+
+export default function VaultPage({ workspace }) {
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [targetWorkspace, setTargetWorkspace] = useState(workspace || 'Company');
+  const [ragQuery, setRagQuery] = useState('');
+  const [ragAnswer, setRagAnswer] = useState(null);
+  const [asking, setAsking] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const fileInputRef = useRef(null);
+  const haptic = useHaptic();
+
+  const recognitionRef = useRef(null);
+
+  const load = () => {
+    setLoading(true);
+    fetch(`${API}/items/type/vault_file?workspace=${workspace || 'Personal'}`)
+      .then(r => r.json())
+      .then(data => setFiles(data))
+      .catch(() => setFiles([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [workspace]);
+
+  const toggleMic = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice recognition is not supported in this browser.");
+      return;
+    }
+
+    if (recording && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setRecording(false);
+    } else {
+      haptic.tap();
+      
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+      
+      recognition.onresult = async (event) => {
+        const transcript = event.results[0][0].transcript;
+        haptic.success();
+        
+        setUploading(true);
+        const formData = new FormData();
+        formData.append('transcript', transcript);
+        formData.append('workspace', targetWorkspace);
+        
+        try {
+          const res = await fetch(`${API}/api/vault_voice`, { method: 'POST', body: formData });
+          if (res.ok) load();
+        } catch(e) {
+          alert('Failed to save voice memo.');
+        } finally {
+          setUploading(false);
+        }
+      };
+      recognition.onerror = () => { setRecording(false); haptic.error(); };
+      recognition.onend = () => setRecording(false);
+      
+      recognitionRef.current = recognition;
+      recognition.start();
+      setRecording(true);
+    }
+  };
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setShowUploadModal(false);
+    haptic.tap();
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('workspace', targetWorkspace);
+
+    try {
+      const res = await fetch(`${API}/api/vault_upload`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) throw new Error('Upload failed');
+      haptic.success();
+      load();
+    } catch (err) {
+      haptic.error();
+      alert('Upload failed. Check backend connection.');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const deleteFile = async (id) => {
+    haptic.delete();
+    setFiles(p => p.filter(f => f.id !== id));
+    try { await fetch(`${API}/items/${id}`, { method: 'DELETE' }); } catch {}
+  };
+
+  const toggleLock = async (id, currentLocked) => {
+    haptic.tap();
+    const newStatus = !currentLocked;
+    setFiles(p => p.map(f => f.id === id ? { ...f, is_locked: newStatus } : f));
+    try {
+      await fetch(`${API}/items/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_locked: newStatus })
+      });
+    } catch {}
+  };
+
+  const unlockItem = (id) => {
+    const savedPin = localStorage.getItem('app_pin') ? JSON.parse(localStorage.getItem('app_pin')) : null;
+    if (!savedPin) {
+      alert("Please set up an App PIN in Settings first to use Item Lock.");
+      return;
+    }
+    const entered = window.prompt("Enter PIN to view this document:");
+    if (entered === savedPin) {
+      toggleLock(id, true);
+    } else if (entered) {
+      alert("Incorrect PIN");
+    }
+  };
+
+  const shareItem = (f, e) => {
+    e.stopPropagation();
+    haptic.tap();
+    if (!f.image_url) {
+      alert("This document does not have a shareable link yet.");
+      return;
+    }
+    if (navigator.share) {
+      navigator.share({
+        title: f.title,
+        text: `Check out this document: ${f.title}`,
+        url: f.image_url
+      }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(f.image_url);
+      alert("Link copied to clipboard!");
+    }
+  };
+
+  const openPreview = (f) => {
+    if (f.is_locked) {
+      unlockItem(f.id);
+    } else {
+      if (f.image_url) {
+        window.open(f.image_url, '_blank');
+      } else {
+        alert("Preview not available for this item.");
+      }
+    }
+  };
+
+  const askVault = async () => {
+    if (!ragQuery.trim()) return;
+    setAsking(true);
+    haptic.tap();
+    
+    try {
+      const res = await fetch(`${API}/api/rag_query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: ragQuery, workspace: workspace || 'Personal' })
+      });
+      const data = await res.json();
+      setRagAnswer(data.answer);
+      haptic.success();
+    } catch {
+      setRagAnswer("Sorry, I couldn't connect to the AI.");
+      haptic.error();
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  const FileIcon = ({ name }) => {
+    if (name.toLowerCase().endsWith('.pdf')) return <FileText className="w-6 h-6 text-red-400" />;
+    if (name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) return <FileImage className="w-6 h-6 text-blue-400" />;
+    return <LucideFile className="w-6 h-6 text-gray-400" />;
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-[#0b0c10] text-white">
+      <div className="p-6 pb-4 shrink-0 bg-gradient-to-b from-[#14151b] to-transparent">
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400">
+              The Vault
+            </h1>
+            <p className="text-gray-400 text-xs mt-1">Secure lifetime storage</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={toggleMic} disabled={uploading}
+              className={`p-3 rounded-full transition-colors ${recording ? 'bg-red-500/20 text-red-400 animate-pulse' : 'bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400'}`}>
+              <Mic className="w-6 h-6"/>
+            </button>
+            <button onClick={() => setShowUploadModal(true)} disabled={uploading}
+              className="bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 p-3 rounded-full transition-colors">
+              {uploading ? <div className="w-6 h-6 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin"/> : <UploadCloud className="w-6 h-6"/>}
+            </button>
+          </div>
+          <input type="file" ref={fileInputRef} className="hidden" onChange={handleUpload} accept=".pdf,image/*,.doc,.docx" />
+        </div>
+
+        {/* Upload Modal */}
+        {showUploadModal && (
+          <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center p-6" onClick={() => setShowUploadModal(false)}>
+            <div className="bg-[#14151b] border border-[#2a2b36] rounded-3xl w-full p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-lg font-bold text-white">Upload Document</h3>
+                <button onClick={() => setShowUploadModal(false)}><X className="w-5 h-5 text-gray-400"/></button>
+              </div>
+              <p className="text-sm text-gray-400 mb-4">Select the workspace for this document. The AI will automatically extract text, categorize it, and set expiry reminders.</p>
+              
+              <div className="space-y-3 mb-6">
+                {['Personal', 'Company', 'Employee Docs'].map(ws => (
+                  <button key={ws} onClick={() => setTargetWorkspace(ws)}
+                    className={`w-full py-3 px-4 rounded-xl text-sm font-semibold flex items-center justify-between border transition-all ${targetWorkspace === ws ? 'border-indigo-500 bg-indigo-500/10 text-indigo-400' : 'border-[#2a2b36] text-gray-400 hover:bg-[#1e1f28]'}`}>
+                    {ws}
+                    {targetWorkspace === ws && <Zap className="w-4 h-4"/>}
+                  </button>
+                ))}
+              </div>
+              
+              <button onClick={() => fileInputRef.current?.click()}
+                className="w-full py-3.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-bold flex items-center justify-center gap-2">
+                <UploadCloud className="w-5 h-5"/> Select File
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Uploading Status Modal */}
+        {uploading && (
+          <div className="absolute inset-0 z-[60] bg-black/90 flex items-center justify-center p-6 backdrop-blur-sm">
+            <div className="bg-[#14151b] border border-indigo-500/30 rounded-3xl w-full p-8 shadow-[0_0_40px_rgba(99,102,241,0.15)] flex flex-col items-center text-center relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-[#2a2b36]">
+                <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse w-full" />
+              </div>
+              <div className="w-20 h-20 bg-indigo-500/10 rounded-full flex items-center justify-center mb-6 relative">
+                <div className="absolute inset-0 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
+                <Zap className="w-8 h-8 text-indigo-400 animate-pulse" />
+              </div>
+              <h3 className="text-xl font-bold text-white mb-2">Analyzing Document</h3>
+              <p className="text-gray-400 text-sm">Vault AI is reading text, auto-categorizing, and securing your file...</p>
+            </div>
+          </div>
+        )}
+
+        {/* RAG Search Bar */}
+        <div className="bg-[#14151b] border border-[#2a2b36] rounded-2xl p-4 mb-4 shadow-lg">
+          <div className="flex items-center gap-3">
+            <Zap className="w-5 h-5 text-yellow-400 shrink-0" />
+            <input
+              type="text"
+              value={ragQuery}
+              onChange={e => setRagQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && askVault()}
+              placeholder="Ask anything about your documents..."
+              className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-gray-500"
+            />
+            {asking ? (
+              <div className="w-4 h-4 rounded-full border-2 border-gray-400 border-t-transparent animate-spin"/>
+            ) : (
+              <button onClick={askVault} disabled={!ragQuery.trim()} className="text-indigo-400 font-semibold text-sm disabled:opacity-30">
+                Ask
+              </button>
+            )}
+          </div>
+        </div>
+
+        {ragAnswer && (
+          <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-2xl p-4 mb-4 relative">
+            <button onClick={() => setRagAnswer(null)} className="absolute top-3 right-3 text-indigo-400/50 hover:text-indigo-400"><X className="w-4 h-4"/></button>
+            <div className="flex items-center gap-2 mb-2">
+              <Zap className="w-4 h-4 text-indigo-400" />
+              <p className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Vault AI</p>
+            </div>
+            <p className="text-sm text-indigo-100 leading-relaxed">{ragAnswer}</p>
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto scrollbar-hide px-6 pb-24">
+        {loading ? (
+          <div className="flex justify-center py-10"><div className="w-8 h-8 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"/></div>
+        ) : files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center opacity-50">
+            <FolderOpen className="w-16 h-16 text-gray-500 mb-4" />
+            <p className="text-lg font-bold text-white mb-1">Your Vault is Empty</p>
+            <p className="text-sm text-gray-400 max-w-[200px]">Upload PDFs, IDs, and contracts to securely store and query them.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {files.map((f) => (
+              <SwipeableRow key={f.id} onDelete={() => deleteFile(f.id)}>
+                <div className="bg-[#14151b] border border-[#2a2b36] rounded-2xl p-4 flex items-center gap-4 group cursor-pointer"
+                  onClick={() => openPreview(f)}>
+                  <div className="w-12 h-12 rounded-xl bg-[#0b0c10] border border-[#2a2b36] flex items-center justify-center shrink-0">
+                    {f.is_locked ? <Lock className="w-6 h-6 text-gray-600" /> : <FileIcon name={f.title} />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className={`text-sm font-semibold truncate transition-colors ${f.is_locked ? 'text-gray-500 italic' : 'text-white group-hover:text-indigo-400'}`}>
+                        {f.is_locked ? 'Locked Document' : f.title}
+                      </h3>
+                      {f.tags && !f.is_locked && (
+                        <span className="bg-indigo-500/20 text-indigo-400 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                          {f.tags}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">{f.is_locked ? 'Requires PIN to view' : f.subtitle}</p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={(e) => shareItem(f, e)}
+                      className="p-2 bg-[#2a2b36] rounded-lg text-gray-400 hover:text-indigo-400 transition-colors">
+                      <Share className="w-4 h-4"/>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); toggleLock(f.id, f.is_locked); }}
+                      className="p-2 bg-[#2a2b36] rounded-lg text-gray-400 hover:text-white transition-colors">
+                      {f.is_locked ? <Lock className="w-4 h-4"/> : <Unlock className="w-4 h-4"/>}
+                    </button>
+                  </div>
+                </div>
+              </SwipeableRow>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
