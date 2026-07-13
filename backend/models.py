@@ -18,3 +18,19 @@ class Item(Base):
     share_token = Column(String, nullable=True, index=True)
     share_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class AssistantAudit(Base):
+    __tablename__ = "assistant_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action = Column(String, index=True)
+    risk_level = Column(Integer, default=0, index=True)
+    status = Column(String, default="completed", index=True)
+    target_type = Column(String, nullable=True, index=True)
+    target_id = Column(Integer, nullable=True, index=True)
+    summary = Column(String)
+    request_text = Column(String, nullable=True)
+    payload = Column(String, nullable=True)
+    confirmation_token = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

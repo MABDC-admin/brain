@@ -170,10 +170,22 @@ def test_assistant_generic_email_requires_confirmation(monkeypatch):
     draft = chat("send email to test@example.com subject Hello body This is a test")
     assert draft.status_code == 200
     assert "Confirm send" in draft.json()["reply"]
+    token = draft.json()["reply"].split("confirm ", 1)[1].split("`", 1)[0]
+    assert sent == []
+
+    wrong_confirm = chat(
+        "confirm wrong-token",
+        [
+            {"role": "user", "content": "send email to test@example.com subject Hello body This is a test"},
+            {"role": "assistant", "content": draft.json()["reply"]},
+        ],
+    )
+    assert wrong_confirm.status_code == 200
+    assert "could not find a pending email" in wrong_confirm.json()["reply"]
     assert sent == []
 
     confirm = chat(
-        "confirm",
+        f"confirm {token}",
         [
             {"role": "user", "content": "send email to test@example.com subject Hello body This is a test"},
             {"role": "assistant", "content": draft.json()["reply"]},
@@ -182,3 +194,33 @@ def test_assistant_generic_email_requires_confirmation(monkeypatch):
     assert confirm.status_code == 200
     assert confirm.json()["reply"] == "Sent email to test@example.com."
     assert sent == [{"to": "test@example.com", "subject": "Hello", "body": "This is a test"}]
+
+    audit_rows = client.get("/api/assistant/audit").json()
+    assert any(row["action"] == "send_email" and row["status"] == "completed" for row in audit_rows)
+
+
+def test_assistant_audits_actions_and_stops_ambiguous_task_updates():
+    created = chat("create task audit payroll")
+    assert created.status_code == 200
+
+    audit_rows = client.get("/api/assistant/audit").json()
+    assert any(row["action"] == "create_task" and row["status"] == "completed" for row in audit_rows)
+
+    first = client.post(
+        "/items",
+        json={"type": "task", "title": "audit duplicate", "subtitle": "Task • No due date", "workspace": "Personal"},
+    )
+    second = client.post(
+        "/items",
+        json={"type": "task", "title": "audit duplicate again", "subtitle": "Task • No due date", "workspace": "Personal"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    ambiguous = chat("mark audit duplicate done")
+    assert ambiguous.status_code == 200
+    assert "multiple matching tasks" in ambiguous.json()["reply"]
+
+    tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
+    duplicate_tasks = [item for item in tasks if item["title"].startswith("audit duplicate")]
+    assert all('"status": "done"' not in (item.get("body") or "") for item in duplicate_tasks)

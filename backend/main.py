@@ -194,12 +194,90 @@ def find_best_item(item_type: str, query: str, db: Session) -> Optional[models.I
     return best_item if best_score > 0 else None
 
 
+def find_ranked_items(item_type: str, query: str, db: Session) -> list[tuple[models.Item, int]]:
+    query_tokens = {token for token in normalize_search_text(query).split() if len(token) > 1}
+    if not query_tokens:
+        return []
+    ranked = []
+    for item in db.query(models.Item).filter(models.Item.type == item_type).all():
+        haystack = normalize_search_text(" ".join([item.title or "", item.subtitle or "", item.body or "", item.workspace or ""]))
+        score = sum(1 for token in query_tokens if token in haystack)
+        if score > 0:
+            ranked.append((item, score))
+    return sorted(ranked, key=lambda pair: pair[1], reverse=True)
+
+
+def find_unique_best_item(item_type: str, query: str, db: Session) -> tuple[Optional[models.Item], list[models.Item]]:
+    ranked = find_ranked_items(item_type, query, db)
+    if not ranked:
+        return None, []
+    best_score = ranked[0][1]
+    best = [item for item, score in ranked if score == best_score]
+    if len(best) > 1:
+        return None, best
+    return best[0], []
+
+
 def create_action_item(db: Session, *, item_type: str, title: str, subtitle: str, body: str = "", workspace: str = "Personal") -> models.Item:
     item = models.Item(type=item_type, title=title, subtitle=subtitle, body=body, workspace=workspace)
     db.add(item)
     db.commit()
     db.refresh(item)
     return item
+
+
+def audit_action(
+    db: Session,
+    *,
+    action: str,
+    risk_level: int,
+    status: str,
+    summary: str,
+    request_text: str = "",
+    target_type: str | None = None,
+    target_id: int | None = None,
+    payload: dict | None = None,
+    confirmation_token: str | None = None,
+) -> models.AssistantAudit:
+    row = models.AssistantAudit(
+        action=action,
+        risk_level=risk_level,
+        status=status,
+        target_type=target_type,
+        target_id=target_id,
+        summary=summary,
+        request_text=request_text,
+        payload=json.dumps(payload or {}, ensure_ascii=False),
+        confirmation_token=confirmation_token,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def audit_to_dict(row: models.AssistantAudit) -> dict:
+    return {
+        "id": row.id,
+        "action": row.action,
+        "risk_level": row.risk_level,
+        "status": row.status,
+        "target_type": row.target_type,
+        "target_id": row.target_id,
+        "summary": row.summary,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@app.get("/api/assistant/audit")
+def read_assistant_audit(limit: int = 50, db: Session = Depends(get_db)):
+    rows = (
+        db.query(models.AssistantAudit)
+        .order_by(models.AssistantAudit.created_at.desc())
+        .limit(min(max(limit, 1), 200))
+        .all()
+    )
+    return [audit_to_dict(row) for row in rows]
 
 
 def has_security_phrase(message: str) -> bool:
@@ -250,7 +328,9 @@ def delete_vault_item(
     item = db.query(models.Item).filter(models.Item.id == item_id, models.Item.type == "vault_file").first()
     if not item:
         raise HTTPException(status_code=404, detail="Vault document not found")
+    item_title = item.title
     delete_vault_document(item, db)
+    audit_action(db, action="delete_vault_document", risk_level=3, status="completed", target_type="vault_file", target_id=item_id, summary=f"Deleted {item_title}", request_text="DELETE /api/vault")
     return {"ok": True}
 
 
@@ -342,41 +422,60 @@ def parse_generic_email(message: str) -> Optional[dict]:
     }
 
 
-def pending_generic_email(history: list) -> Optional[dict]:
-    if not any(
-        isinstance(h, dict)
-        and h.get("role") == "assistant"
-        and "Confirm send" in (h.get("content") or "")
-        for h in history[-4:]
-    ):
-        return None
-    for h in reversed(history[-8:]):
-        if isinstance(h, dict) and h.get("role") == "user":
-            parsed = parse_generic_email(h.get("content", ""))
-            if parsed:
-                return parsed
-    return None
+def confirmation_token_from_message(message: str) -> str:
+    match = re.search(r"\bconfirm\s+([A-Za-z0-9_-]{6,})\b", message or "", re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def is_confirmation_message(message: str) -> bool:
-    return normalize_search_text(message) in {"confirm", "yes", "send", "send it", "approve", "approved"}
+    return bool(confirmation_token_from_message(message))
 
 
-def handle_generic_email_request(message: str, history: list) -> Optional[dict]:
-    pending = pending_generic_email(history)
-    if pending and is_confirmation_message(message):
-        ok, detail = send_generic_email(pending["to"], pending["subject"], pending["body"])
+def handle_generic_email_request(message: str, history: list, db: Session) -> Optional[dict]:
+    token = confirmation_token_from_message(message)
+    if token:
+        pending = (
+            db.query(models.AssistantAudit)
+            .filter(
+                models.AssistantAudit.action == "send_email",
+                models.AssistantAudit.status == "pending",
+                models.AssistantAudit.confirmation_token == token,
+            )
+            .first()
+        )
+        if not pending:
+            return {"reply": "I could not find a pending email for that confirmation token."}
+        payload = json.loads(pending.payload or "{}")
+        ok, detail = send_generic_email(payload["to"], payload["subject"], payload["body"])
         if ok:
-            return {"reply": f"Sent email to {pending['to']}."}
+            pending.status = "completed"
+            pending.summary = f"Sent email to {payload['to']}"
+            db.commit()
+            return {"reply": f"Sent email to {payload['to']}."}
+        pending.status = "failed"
+        pending.summary = f"Email send failed: {detail}"
+        db.commit()
         return {"reply": f"I could not send the email: {detail}"}
 
     parsed = parse_generic_email(message)
     if not parsed:
         return None
+    token = secrets.token_urlsafe(6)
+    audit_action(
+        db,
+        action="send_email",
+        risk_level=3,
+        status="pending",
+        target_type="email",
+        summary=f"Pending email to {parsed['to']}",
+        request_text=message,
+        payload=parsed,
+        confirmation_token=token,
+    )
     return {
         "reply": (
             f"Confirm send email to {parsed['to']} with subject \"{parsed['subject']}\"? "
-            "Reply `confirm` to send."
+            f"Reply `confirm {token}` to send."
         )
     }
 
@@ -398,7 +497,9 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
 
     ok, detail = send_document_email(to_email, doc)
     if ok:
+        audit_action(db, action="send_vault_document_email", risk_level=3, status="completed", target_type="vault_file", target_id=doc.id, summary=f"Sent {doc.title} to {to_email}", request_text=message)
         return {"reply": f"Sent {doc.title} to {to_email}."}
+    audit_action(db, action="send_vault_document_email", risk_level=3, status="failed", target_type="vault_file", target_id=doc.id, summary=f"Could not send {doc.title} to {to_email}: {detail}", request_text=message)
     return {"reply": f"I found {doc.title}, but could not send it: {detail}"}
 
 
@@ -424,6 +525,7 @@ def handle_document_rename_request(message: str, history: list, db: Session) -> 
     old_title = doc.title
     doc.title = preserve_file_extension(old_title, new_title)
     db.commit()
+    audit_action(db, action="rename_vault_document", risk_level=2, status="completed", target_type="vault_file", target_id=doc.id, summary=f"Renamed {old_title} to {doc.title}", request_text=message)
     return {"reply": f"Renamed {old_title} to {doc.title}."}
 
 
@@ -438,6 +540,7 @@ def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
         subtitle = f"Task • Due {due}" if due else "Task • No due date"
         body = dump_item_body({"subtasks": [], "priority": "", "due": due, "status": "open"})
         item = create_action_item(db, item_type="task", title=title, subtitle=subtitle, body=body)
+        audit_action(db, action="create_task", risk_level=1, status="completed", target_type="task", target_id=item.id, summary=f"Created task {item.title}", request_text=message)
         return {"reply": f"Created task: {item.title}."}
 
     note_match = CREATE_NOTE_RE.search(message or "")
@@ -450,6 +553,7 @@ def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
         if not title:
             return {"reply": "Tell me the note title after `create note`."}
         item = create_action_item(db, item_type="note", title=title, subtitle="Note • Today", body=body)
+        audit_action(db, action="create_note", risk_level=1, status="completed", target_type="note", target_id=item.id, summary=f"Created note {item.title}", request_text=message)
         return {"reply": f"Created note: {item.title}."}
 
     expense_match = CREATE_EXPENSE_RE.search(message or "")
@@ -464,6 +568,7 @@ def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
         title = f"{amount} {currency} {item_name}"
         body = dump_item_body({"amount": amount, "currency": currency, "item": item_name, "date": parse_due_date(raw_expense)})
         item = create_action_item(db, item_type="expense", title=title, subtitle="Other • Today", body=body)
+        audit_action(db, action="create_expense", risk_level=1, status="completed", target_type="expense", target_id=item.id, summary=f"Created expense {item.title}", request_text=message)
         return {"reply": f"Created expense: {item.title}."}
 
     reminder_match = REMINDER_RE.search(message or "")
@@ -479,13 +584,18 @@ def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
         subtitle = f"Reminder • {repeat_part}{time_part}"
         body = dump_item_body({"date": date, "time": time_value, "repeat": repeat_part, "status": "open"})
         item = create_action_item(db, item_type="reminder", title=title, subtitle=subtitle, body=body)
+        audit_action(db, action="create_reminder", risk_level=1, status="completed", target_type="reminder", target_id=item.id, summary=f"Created reminder {item.title}", request_text=message)
         return {"reply": f"Created reminder: {item.title}."}
 
     done_match = MARK_DONE_RE.search(message or "")
     open_match = MARK_OPEN_RE.search(message or "")
     if done_match or open_match:
         target_query = (done_match or open_match).group(1).strip()
-        task = find_best_item("task", target_query, db)
+        task, ambiguous = find_unique_best_item("task", target_query, db)
+        if ambiguous:
+            names = ", ".join(item.title for item in ambiguous[:5])
+            audit_action(db, action="update_task_status", risk_level=2, status="blocked", target_type="task", summary=f"Ambiguous task match: {names}", request_text=message)
+            return {"reply": f"I found multiple matching tasks: {names}. Please use a more specific title."}
         if not task:
             return {"reply": f"I could not find a task matching `{target_query}`."}
         body = parse_item_body(task)
@@ -495,6 +605,7 @@ def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
         task.subtitle = re.sub(r"\s•\s(?:Done|Open)$", "", task.subtitle or "")
         task.subtitle = f"{task.subtitle or 'Task'} • {'Done' if status == 'done' else 'Open'}"
         db.commit()
+        audit_action(db, action="update_task_status", risk_level=2, status="completed", target_type="task", target_id=task.id, summary=f"Marked task {status}: {task.title}", request_text=message)
         return {"reply": f"Marked task {status}: {task.title}."}
 
     return None
@@ -546,7 +657,9 @@ def handle_document_delete_request(message: str, history: list, db: Session) -> 
         return ask_for_vault_delete_phrase(doc)
 
     doc_title = doc.title
+    doc_id = doc.id
     delete_vault_document(doc, db)
+    audit_action(db, action="delete_vault_document", risk_level=3, status="completed", target_type="vault_file", target_id=doc_id, summary=f"Deleted {doc_title}", request_text=message)
     return {"reply": f"Deleted {doc_title} from the vault."}
 
 
@@ -703,7 +816,7 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     message = data.get("message", "")
     history = data.get("history", [])
 
-    email_intent = handle_generic_email_request(message, history)
+    email_intent = handle_generic_email_request(message, history, db)
     if email_intent:
         return email_intent
 
