@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import html
 import logging
 import os
+import re
 import secrets
 import uuid
 
@@ -78,6 +79,92 @@ def model_data(model: BaseModel, *, exclude_unset: bool = False) -> dict:
 
 def uploaded_file_url(filename: str) -> str:
     return f"{PUBLIC_BASE_URL}/static/{filename}"
+
+
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
+
+
+def normalize_search_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def find_best_vault_document(query: str, db: Session) -> Optional[models.Item]:
+    query_tokens = set(normalize_search_text(query).split())
+    docs = db.query(models.Item).filter(models.Item.type == "vault_file", models.Item.image_url.is_not(None)).all()
+    best_doc = None
+    best_score = 0
+    for doc in docs:
+        haystack = normalize_search_text(" ".join([doc.title or "", doc.subtitle or "", doc.body or "", doc.workspace or ""]))
+        score = sum(1 for token in query_tokens if len(token) > 2 and token in haystack)
+        if score > best_score:
+            best_doc = doc
+            best_score = score
+    return best_doc if best_score > 0 else None
+
+
+def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
+    MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
+    if not MABDC_MAIL_API_KEY:
+        return False, "Mail API key is not configured on the backend."
+    if not item.image_url:
+        return False, "That document does not have a file link yet."
+
+    safe_title = html.escape(item.title or "Vault document")
+    safe_url = html.escape(item.image_url)
+    payload = {
+        "to": to_email,
+        "from": "vault-ai@mabdc.org",
+        "subject": f"Vault document: {item.title}",
+        "html": f"""
+        <div style="font-family: sans-serif; color: #333;">
+            <h2>Command Brain Vault Document</h2>
+            <p>Hello,</p>
+            <p>The requested vault document is ready:</p>
+            <p><strong>{safe_title}</strong></p>
+            <p><a href="{safe_url}">Open document</a></p>
+            <p>If the button does not work, copy this link:</p>
+            <p>{safe_url}</p>
+            <br/>
+            <p>Command Brain AI</p>
+        </div>
+        """,
+    }
+    try:
+        resp = httpx.post(
+            "https://api-mail.mabdc.com/v1/emails",
+            headers={"Authorization": f"Bearer {MABDC_MAIL_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code in [200, 202]:
+            return True, "sent"
+        logger.warning("Document email API failed: %s %s", resp.status_code, resp.text)
+        return False, f"Mail API returned {resp.status_code}."
+    except Exception as exc:
+        logger.exception("Document email failed: %s", exc)
+        return False, "Mail delivery failed."
+
+
+def handle_document_email_request(message: str, history: list, db: Session) -> Optional[dict]:
+    email_match = EMAIL_RE.search(message or "")
+    if not email_match or not SEND_WORD_RE.search(message or ""):
+        return None
+
+    to_email = email_match.group(0)
+    search_parts = [EMAIL_RE.sub(" ", message)]
+    for h in reversed(history[-6:]):
+        content = h.get("content", "") if isinstance(h, dict) else ""
+        if content:
+            search_parts.append(content)
+    doc = find_best_vault_document(" ".join(search_parts), db)
+    if not doc:
+        return {"reply": f"I could not find the vault document to send to {to_email}. Try: send GEMA to {to_email}"}
+
+    ok, detail = send_document_email(to_email, doc)
+    if ok:
+        return {"reply": f"Sent {doc.title} to {to_email}."}
+    return {"reply": f"I found {doc.title}, but could not send it: {detail}"}
 
 @app.post("/api/scan", response_model=List[schemas.Item])
 async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
@@ -167,6 +254,10 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     data    = await request.json()
     message = data.get("message", "")
     history = data.get("history", [])
+
+    mail_intent = handle_document_email_request(message, history, db)
+    if mail_intent:
+        return mail_intent
 
     items = db.query(models.Item).order_by(models.Item.created_at.desc()).limit(80).all()
     by_type = {}
