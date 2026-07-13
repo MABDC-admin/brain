@@ -37,6 +37,43 @@ body {
   padding: 0;
 }
 
+.app-shell {
+  padding: 1rem;
+}
+
+.phone-shell {
+  width: 400px;
+  height: 850px;
+  border-radius: 44px;
+  border: 8px solid var(--frame-border);
+  box-shadow: 0 0 0 1px var(--border-color), 0 40px 80px rgba(0, 0, 0, 0.5);
+}
+
+@media (max-width: 640px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    min-height: 100%;
+    background-color: var(--frame-bg);
+  }
+
+  .app-shell {
+    min-height: 100dvh;
+    padding: 0;
+    background-color: var(--frame-bg) !important;
+  }
+
+  .phone-shell {
+    width: 100vw;
+    height: 100dvh;
+    min-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
+
 /* Hide scrollbar */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }

@@ -35,9 +35,9 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
   };
 
   return (
-    <div className="flex justify-center items-center min-h-screen p-4 font-sans transition-colors duration-500" style={{ backgroundColor: 'var(--app-bg)' }}>
-      <div className="w-[400px] h-[850px] rounded-[44px] shadow-2xl relative overflow-hidden transition-colors duration-500"
-           style={{ backgroundColor: 'var(--frame-bg)', border: '8px solid var(--frame-border)', boxShadow: '0 0 0 1px var(--border-color), 0 40px 80px rgba(0,0,0,0.5)' }}>
+    <div className="app-shell flex justify-center items-center min-h-screen font-sans transition-colors duration-500" style={{ backgroundColor: 'var(--app-bg)' }}>
+      <div className="phone-shell relative overflow-hidden transition-colors duration-500"
+           style={{ backgroundColor: 'var(--frame-bg)' }}>
 
         {/* Status Bar & Workspace Switcher */}
         <div className="flex justify-between items-center px-7 pt-4 pb-2 text-sm font-semibold shrink-0 z-10" style={{ color: 'var(--text-primary)' }}>

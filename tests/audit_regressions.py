@@ -179,6 +179,18 @@ def test_task_page_supports_editing_existing_tasks() -> None:
     assert "method: targetTask ? 'PUT' : 'POST'" in task_page
 
 
+def test_mobile_layout_removes_desktop_phone_frame() -> None:
+    layout = read("frontend/src/Layout.jsx")
+    css = read("frontend/src/index.css")
+    assert "phone-shell" in layout
+    assert "@media (max-width: 640px)" in css
+    assert ".phone-shell" in css
+    assert "width: 100vw;" in css
+    assert "height: 100dvh;" in css
+    assert "border-radius: 0;" in css
+    assert "box-shadow: none;" in css
+
+
 if __name__ == "__main__":
     tests = [
         test_no_hardcoded_localhost_api_urls,
@@ -200,6 +212,7 @@ if __name__ == "__main__":
         test_app_uses_router_location_for_shared_routes,
         test_backend_smoke_uses_isolated_database,
         test_task_page_supports_editing_existing_tasks,
+        test_mobile_layout_removes_desktop_phone_frame,
     ]
 
     failures = []
