@@ -314,6 +314,16 @@ def test_vault_uses_in_app_file_preview() -> None:
     assert "window.open(f.image_url, '_blank')" not in vault
 
 
+def test_vault_has_no_pin_based_item_lock() -> None:
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    assert "app_pin" not in vault
+    assert "unlockItem" not in vault
+    assert "toggleLock" not in vault
+    assert "Enter PIN" not in vault
+    assert "Locked Document" not in vault
+    assert "Requires PIN" not in vault
+
+
 def test_vault_supports_bulk_sequential_uploads() -> None:
     vault = read("frontend/src/pages/VaultPage.jsx")
     assert "multiple" in vault

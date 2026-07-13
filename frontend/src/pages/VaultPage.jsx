@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, X, Lock, Unlock, Zap, Mic, Share } from 'lucide-react';
+import { ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, X, Zap, Mic, Share } from 'lucide-react';
 import { useHaptic } from '../hooks/useHaptic.js';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
@@ -144,33 +144,6 @@ export default function VaultPage({ workspace }) {
     }
   };
 
-  const toggleLock = async (id, currentLocked) => {
-    haptic.tap();
-    const newStatus = !currentLocked;
-    setFiles(p => p.map(f => f.id === id ? { ...f, is_locked: newStatus } : f));
-    try {
-      await fetch(`${API}/items/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_locked: newStatus })
-      });
-    } catch {}
-  };
-
-  const unlockItem = (id) => {
-    const savedPin = localStorage.getItem('app_pin') ? JSON.parse(localStorage.getItem('app_pin')) : null;
-    if (!savedPin) {
-      alert("Please set up an App PIN in Settings first to use Item Lock.");
-      return;
-    }
-    const entered = window.prompt("Enter PIN to view this document:");
-    if (entered === savedPin) {
-      toggleLock(id, true);
-    } else if (entered) {
-      alert("Incorrect PIN");
-    }
-  };
-
   const shareItem = (f, e) => {
     e.stopPropagation();
     haptic.tap();
@@ -191,14 +164,10 @@ export default function VaultPage({ workspace }) {
   };
 
   const openPreview = (f) => {
-    if (f.is_locked) {
-      unlockItem(f.id);
+    if (f.image_url) {
+      setSelectedFile(f);
     } else {
-      if (f.image_url) {
-        setSelectedFile(f);
-      } else {
-        alert("Preview not available for this item.");
-      }
+      alert("Preview not available for this item.");
     }
   };
 
@@ -366,39 +335,35 @@ export default function VaultPage({ workspace }) {
                 <div className="bg-[#14151b] border border-[#2a2b36] rounded-2xl p-4 flex items-center gap-4 group cursor-pointer"
                   onClick={() => openPreview(f)}>
                   <div className="w-12 h-12 rounded-xl bg-[#0b0c10] border border-[#2a2b36] flex items-center justify-center shrink-0">
-                    {f.is_locked ? <Lock className="w-6 h-6 text-gray-600" /> : <FileIcon name={f.title} />}
+                    <FileIcon name={f.title} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <h3 className={`text-sm font-semibold truncate transition-colors ${f.is_locked ? 'text-gray-500 italic' : 'text-white group-hover:text-indigo-400'}`}>
-                        {f.is_locked ? 'Locked Document' : f.title}
+                      <h3 className="text-sm font-semibold truncate transition-colors text-white group-hover:text-indigo-400">
+                        {f.title}
                       </h3>
-                      {f.tags && !f.is_locked && (
+                      {f.tags && (
                         <span className="bg-indigo-500/20 text-indigo-400 text-[10px] px-2 py-0.5 rounded-full font-bold">
                           {f.tags}
                         </span>
                       )}
-                      {scanStatus === 'fallback' && !f.is_locked && (
+                      {scanStatus === 'fallback' && (
                         <span className="bg-amber-500/15 text-amber-300 text-[10px] px-2 py-0.5 rounded-full font-bold" title={scanError || 'Vision scan used fallback text'}>
                           Fallback OCR
                         </span>
                       )}
-                      {scanStatus === 'success' && !f.is_locked && (
+                      {scanStatus === 'success' && (
                         <span className="bg-emerald-500/15 text-emerald-300 text-[10px] px-2 py-0.5 rounded-full font-bold" title={`Vision attempts: ${scanAttempts}`}>
                           OCR OK
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5">{f.is_locked ? 'Requires PIN to view' : f.subtitle}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{f.subtitle}</p>
                   </div>
                   <div className="flex items-center gap-1">
                     <button onClick={(e) => shareItem(f, e)}
                       className="p-2 bg-[#2a2b36] rounded-lg text-gray-400 hover:text-indigo-400 transition-colors">
                       <Share className="w-4 h-4"/>
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); toggleLock(f.id, f.is_locked); }}
-                      className="p-2 bg-[#2a2b36] rounded-lg text-gray-400 hover:text-white transition-colors">
-                      {f.is_locked ? <Lock className="w-4 h-4"/> : <Unlock className="w-4 h-4"/>}
                     </button>
                   </div>
                 </div>
