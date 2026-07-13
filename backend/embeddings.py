@@ -23,5 +23,18 @@ def generate_embedding(text: str) -> list[float]:
         )
         return response.data[0]["embedding"]
     except Exception as e:
-        logger.error("Failed to generate embedding: %s", e)
+        logger.error(f"Embedding error: {e}")
         return [0.0] * 1536
+
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
+    """Splits a long document into smaller overlapping chunks for vector search."""
+    if not text:
+        return []
+    words = text.split()
+    chunks = []
+    i = 0
+    while i < len(words):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
+        i += (chunk_size - overlap)
+    return chunks

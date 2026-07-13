@@ -26,7 +26,8 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
     { icon: Settings, label: 'Settings', to: '/settings', badge: null },
   ];
 
-  const wsUrl = `ws://${window.location.hostname}:8001/ws/status`;
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${wsProtocol}//${window.location.host}/api/ws/status`;
   const { isConnected, messages } = useWebSocket(wsUrl);
 
   const handleFabOption = (opt) => {

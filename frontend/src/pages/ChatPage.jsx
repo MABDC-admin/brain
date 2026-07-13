@@ -115,7 +115,9 @@ export default function ChatPage() {
       setError('Could not reach AI — is the backend running?');
     }
     setLoading(false);
-    setTimeout(() => inputRef.current?.focus(), 100);
+    if (window.matchMedia('(pointer: fine)').matches) {
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
   };
 
   const clear = () => setMessages([

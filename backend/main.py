@@ -23,7 +23,7 @@ from typing import List, Optional
 import httpx
 import base64
 from celery_app import celery_app
-from embeddings import generate_embedding
+from embeddings import generate_embedding, chunk_text
 from llm import call_llm_async
 
 import fitz
@@ -104,14 +104,20 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-@app.websocket("/ws/status")
+@app.websocket("/api/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.post("/api/internal/ws_broadcast")
+async def ws_broadcast(payload: dict):
+    # Used by Celery tasks to broadcast to WebSocket clients
+    await manager.broadcast(payload)
+    return {"status": "ok"}
 
 class LoginRequest(BaseModel):
     email: str
@@ -340,6 +346,13 @@ ASSISTANT_TOOLS = [
         "requires_confirmation": False,
         "parameters": {"query": "string", "to": "email"},
     },
+    {
+        "name": "save_contact",
+        "description": "Save a contact's email address, phone number, and name.",
+        "risk_level": 1,
+        "requires_confirmation": False,
+        "parameters": {"name": "string", "email": "string optional", "phone": "string optional"},
+    },
 ]
 ASSISTANT_TOOL_NAMES = {tool["name"] for tool in ASSISTANT_TOOLS}
 ASSISTANT_TOOL_RISK = {tool["name"]: tool["risk_level"] for tool in ASSISTANT_TOOLS}
@@ -372,20 +385,40 @@ def find_ranked_vault_document_matches(query: str, db: Session) -> list[dict]:
     if not query_tokens:
         query_tokens = { token for token in normalize_search_text(query).split() if len(token) > 2 and token not in {"the", "this", "that", "please", "to", "from"} }
 
+    chunks = db.query(models.DocumentChunk).all()
+    chunk_scores_by_item = {}
+    
+    if query_embedding and any(query_embedding):
+        for chunk in chunks:
+            if chunk.embedding and any(chunk.embedding):
+                try:
+                    dot = sum(a * b for a, b in zip(chunk.embedding, query_embedding))
+                    mag1 = sum(a * a for a in chunk.embedding) ** 0.5
+                    mag2 = sum(b * b for b in query_embedding) ** 0.5
+                    similarity = dot / (mag1 * mag2) if mag1 and mag2 else 0
+                    if similarity > chunk_scores_by_item.get(chunk.item_id, 0.0):
+                        chunk_scores_by_item[chunk.item_id] = similarity
+                except Exception:
+                    pass
+
     for doc in docs:
         score = 0
         confidence = 0.0
         
+        doc_similarity = 0.0
         if doc.embedding and query_embedding and any(query_embedding):
             try:
                 dot = sum(a * b for a, b in zip(doc.embedding, query_embedding))
                 mag1 = sum(a * a for a in doc.embedding) ** 0.5
                 mag2 = sum(b * b for b in query_embedding) ** 0.5
-                similarity = dot / (mag1 * mag2) if mag1 and mag2 else 0
-                score = similarity * 10
-                confidence = max(0.0, min(1.0, similarity))
+                doc_similarity = dot / (mag1 * mag2) if mag1 and mag2 else 0
             except Exception:
                 pass
+                
+        best_similarity = max(doc_similarity, chunk_scores_by_item.get(doc.id, 0.0))
+        if best_similarity > 0:
+            score = best_similarity * 10
+            confidence = max(0.0, min(1.0, best_similarity))
                 
         haystack = normalize_search_text(" ".join([doc.title or "", doc.subtitle or "", doc.body or "", doc.workspace or ""]))
         matched_tokens = sorted(token for token in query_tokens if token in haystack)
@@ -802,6 +835,20 @@ def execute_assistant_tool(
         item = create_action_item(db, item_type="note", title=title, subtitle="Note • Today", body=body)
         audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="note", target_id=item.id, summary=f"Created note {item.title}", request_text=request_text, payload=payload)
         return {"reply": f"Created note: {item.title}."}
+
+    if tool_name == "save_contact":
+        name = str(arguments.get("name") or "").strip()
+        if not name:
+            return {"reply": "Please tell me the name of the contact."}
+        email = str(arguments.get("email") or "").strip()
+        phone = str(arguments.get("phone") or "").strip()
+        
+        # Subtitle logic to match ContactsPage expected format (Contact • Follow up YYYY-MM-DD or just Contact)
+        # But we'll just put Contact for now
+        body = dump_item_body({"email": email, "phone": phone, "notes": "", "lastContacted": "", "nextFollowUp": ""})
+        item = create_action_item(db, item_type="contact", title=name, subtitle="Contact", body=body)
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="contact", target_id=item.id, summary=f"Saved contact {item.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Saved contact {item.title} ({email or phone})."}
 
     if tool_name == "create_expense":
         amount = arguments.get("amount")
@@ -1292,21 +1339,70 @@ def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
     payload = {
         "to": to_email,
         "from": "vault-ai@mabdc.org",
-        "subject": f"Vault document: {item.title}",
+        "subject": f"Vault Secure Transfer: {item.title}",
         "html": f"""
-        <div style="font-family: sans-serif; color: #333;">
-            <h2>Command Brain Vault Document</h2>
-            <p>Hello,</p>
-            <p>The requested vault document is ready:</p>
-            <p><strong>{safe_title}</strong></p>
-            <p><a href="{safe_url}">Open document</a></p>
-            <p>If the button does not work, copy this link:</p>
-            <p>{safe_url}</p>
-            <br/>
-            <p>Command Brain AI</p>
+        <div style="font-family: 'Inter', Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #ffcce6 0%, #e6ccff 30%, #ccffff 70%, #ccffcc 100%); padding: 40px; border-radius: 16px;">
+            <div style="background-color: #ffffff; border-radius: 20px; padding: 40px; box-shadow: 0 10px 40px rgba(0,0,0,0.08); text-align: center; border: 1px solid #f3f4f6;">
+                
+                <div style="background: linear-gradient(90deg, #6366f1, #d946ef); color: #ffffff; display: inline-block; padding: 8px 24px; border-radius: 24px; font-weight: 800; margin-bottom: 30px; font-size: 14px; letter-spacing: 1px;">
+                    MABDC
+                </div>
+                
+                <h1 style="color: #2e1065; margin: 0 0 15px 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">Secure Document<br>Transfer</h1>
+                
+                <p style="color: #475569; font-size: 17px; line-height: 1.6; margin-bottom: 35px; font-weight: 500;">
+                    Hello! A document from the <span style="color: #e11d48; font-weight: 700;">AI</span> <span style="color: #059669; font-weight: 700;">Vault</span> has been securely shared with you.
+                </p>
+                
+                <div style="background-color: #ffffff; border: 1px solid #d8b4e2; padding: 16px; margin-bottom: 35px; text-align: left; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+                    <table width="100%" cellpadding="0" cellspacing="0" style="border: none;">
+                        <tr>
+                            <td width="50" valign="middle">
+                                <div style="background-color: #f1f5f9; width: 40px; height: 40px; border-radius: 8px; text-align: center; line-height: 40px; font-size: 22px;">
+                                    📄
+                                </div>
+                            </td>
+                            <td valign="middle" style="padding-left: 10px;">
+                                <div style="color: #0369a1; font-weight: 700; font-size: 15px; margin-bottom: 4px; word-break: break-word;">{safe_title}</div>
+                                <div style="color: #16a34a; font-size: 13px; font-weight: 500;">Securely attached • Command Brain</div>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <a href="{safe_url}" style="background: linear-gradient(90deg, #7c3aed, #10b981); color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 24px; font-weight: 700; display: inline-block; font-size: 16px; box-shadow: 0 8px 16px rgba(124, 58, 237, 0.25); width: 80%; text-align: center;">
+                    Access Document Online 🔗
+                </a>
+                
+            </div>
+            <p style="text-align: center; color: #64748b; font-size: 12px; margin-top: 25px;">
+                Automated secure message sent by Command Brain AI.<br/>
+                MABDC AI Systems
+            </p>
         </div>
         """,
     }
+
+    # Attach the file from disk if it exists
+    filename_on_disk = item.image_url.split('/')[-1]
+    filepath = os.path.join("uploads", filename_on_disk)
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "rb") as f:
+                b64_content = base64.b64encode(f.read()).decode("utf-8")
+                
+                display_filename = item.title or filename_on_disk
+                if "." not in display_filename and "." in filename_on_disk:
+                    display_filename += "." + filename_on_disk.split(".")[-1]
+                    
+                payload["attachments"] = [
+                    {
+                        "filename": display_filename,
+                        "content": b64_content
+                    }
+                ]
+        except Exception as e:
+            logger.error(f"Failed to attach file to email: {e}")
     try:
         resp = httpx.post(
             "https://api-mail.mabdc.com/v1/emails",
@@ -1578,12 +1674,37 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
         content = h.get("content", "") if isinstance(h, dict) else ""
         if content:
             search_parts.append(content)
-    match, match_error = resolve_vault_document_match(" ".join(search_parts), db)
-    if match_error:
-        return match_error
-    if not match:
-        return {"reply": f"I could not find the vault document to send to {to_email}. Try: send GEMA to {to_email}"}
-    doc = match["doc"]
+            
+    query = " ".join(search_parts).lower()
+    
+    # 1. Extract all documents that were explicitly mentioned in the recent chat/history
+    all_docs = db.query(models.Item).filter(models.Item.type == "vault_file").all()
+    mentioned_docs = [d for d in all_docs if d.title and len(d.title) > 3 and d.title.lower() in query]
+    
+    # 2. Check if the user's immediate message narrows it down to a single specific doc
+    user_query = search_parts[0].lower().strip()
+    explicit_match = [d for d in mentioned_docs if d.title.lower() in user_query]
+    if len(explicit_match) == 1:
+        mentioned_docs = explicit_match
+        
+    # 3. Fallback to AI semantic matching if no explicit titles were found
+    if not mentioned_docs:
+        match, match_error = resolve_vault_document_match(query, db)
+        if match_error:
+            return match_error
+        if not match:
+            return {"reply": f"I could not find the vault document to send to {to_email}. Try: send GEMA to {to_email}"}
+        mentioned_docs = [match["doc"]]
+        
+    # 4. If multiple documents are matched (e.g. user said "send them all"), chain them in an AI plan
+    if len(mentioned_docs) > 1:
+        steps = [{"tool": "send_vault_document_email", "arguments": {"to": to_email, "query": d.title}} for d in mentioned_docs]
+        return execute_assistant_plan({"steps": steps}, message, db)
+
+    doc = mentioned_docs[0]
+    # For single document, create the approval directly (faster, skips tool execution loop)
+    # Using exact title as match query to ensure vault_match_details can reconstruct it
+    match = {"doc": doc, "score": 100.0, "reason": "Explicit title match"}
     details = {"to": to_email, **vault_match_details(match)}
 
     approval = create_pending_approval(
@@ -2595,75 +2716,136 @@ def check_due_reminders_task():
 def run_scheduled_backup_task():
     run_scheduled_backup()
 
+@celery_app.task
+def process_vault_document_task(item_id: int, filename: str, filepath: str, mime_type: str, workspace: str, image_url: str):
+    import asyncio
+    import requests
+    db = SessionLocal()
+    try:
+        with open(filepath, "rb") as f:
+            contents = f.read()
+
+        vision_images = []
+        pdf_text = ""
+        if "pdf" in mime_type.lower() or filename.lower().endswith(".pdf"):
+            pdf_text = extract_pdf_text(contents)
+            vision_images = render_pdf_pages_for_vision(contents)
+            mime_type = "image/jpeg"
+        elif mime_type.startswith("image/"):
+            vision_images = [base64.b64encode(contents).decode("utf-8")]
+
+        prompt = vault_index_prompt(filename, pdf_text)
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ocr_text, scan_attempts, scan_error = loop.run_until_complete(
+            request_vault_vision_extraction(prompt, vision_images, mime_type)
+        )
+
+        extracted = build_vault_scan_result(
+            ocr_text=ocr_text,
+            filename=filename,
+            pdf_text=pdf_text,
+            vision_attempts=scan_attempts,
+            vision_error=scan_error,
+        )
+
+        display_title = preserve_file_extension(filename, extracted["document_title"] or filename)
+        category = extracted["category"] or "Document"
+        owner = extracted.get("owner", "")
+        expiry = extracted["expiry_date"] or "None"
+        summary = extracted["summary"]
+        index_text = build_vault_index_text(filename, display_title, category, summary, extracted, pdf_text)
+
+        vault_item = db.query(models.Item).filter(models.Item.id == item_id).first()
+        if vault_item:
+            vault_item.title = display_title
+            vault_item.subtitle = vault_subtitle(category, owner)
+            vault_item.body = vault_body_payload(index_text, extracted, summary)
+            vault_item.tags = owner or None
+            vault_item.embedding = generate_embedding(index_text)
+
+            # Document Chunking
+            chunks = chunk_text(index_text)
+            for i, text_chunk in enumerate(chunks):
+                chunk_embedding = generate_embedding(text_chunk)
+                db_chunk = models.DocumentChunk(
+                    item_id=item_id,
+                    chunk_index=i,
+                    chunk_text=text_chunk,
+                    embedding=chunk_embedding
+                )
+                db.add(db_chunk)
+
+            if expiry.lower() != "none" and len(expiry) > 4:
+                reminder_item = models.Item(
+                    type="reminder",
+                    title=f"Renew: {display_title}",
+                    subtitle=f"Expires {expiry}",
+                    workspace=workspace
+                )
+                db.add(reminder_item)
+                # Note: send_expiry_email blocks, which is fine in Celery
+                send_expiry_email("sottodennis@gmail.com", display_title, expiry)
+
+            db.commit()
+            logger.info("Vault upload succeeded in background for %s", filename)
+            
+            # Notify UI
+            try:
+                requests.post("http://127.0.0.1:8001/api/internal/ws_broadcast", json={"type": "vault_processed", "id": item_id}, timeout=2)
+            except:
+                pass
+
+    except Exception as e:
+        logger.error("process_vault_document_task failed: %s", e)
+        db.rollback()
+        vault_item = db.query(models.Item).filter(models.Item.id == item_id).first()
+        if vault_item:
+            vault_item.subtitle = "Processing failed"
+            db.commit()
+            try:
+                requests.post("http://127.0.0.1:8001/api/internal/ws_broadcast", json={"type": "vault_processed", "id": item_id}, timeout=2)
+            except:
+                pass
+    finally:
+        db.close()
+
+
 @app.post("/api/vault_upload")
 async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Company"), db: Session = Depends(get_db)):
     logger.info("Vault upload triggered for %s (%s)", file.filename, file.content_type)
 
     contents = await file.read()
-    mime_type = file.content_type or "application/pdf"
-    
-    vision_images = []
-    pdf_text = ""
-
-    # Convert PDF pages to images and extract embedded text when available.
-    if "pdf" in mime_type.lower() or file.filename.lower().endswith(".pdf"):
-        pdf_text = extract_pdf_text(contents)
-        vision_images = render_pdf_pages_for_vision(contents)
-        mime_type = "image/jpeg"
-    elif mime_type.startswith("image/"):
-        vision_images = [base64.b64encode(contents).decode("utf-8")]
-    
-    # Save locally
     ext = file.filename.split('.')[-1] if '.' in file.filename else "file"
     filename = f"{uuid.uuid4()}.{ext}"
     os.makedirs("uploads", exist_ok=True)
-    with open(os.path.join("uploads", filename), "wb") as f:
+    filepath = os.path.join("uploads", filename)
+    with open(filepath, "wb") as f:
         f.write(contents)
 
     image_url = uploaded_file_url(filename)
-
-    prompt = vault_index_prompt(file.filename, pdf_text)
-
-    ocr_text, scan_attempts, scan_error = await request_vault_vision_extraction(prompt, vision_images, mime_type)
-    extracted = build_vault_scan_result(
-        ocr_text=ocr_text,
-        filename=file.filename,
-        pdf_text=pdf_text,
-        vision_attempts=scan_attempts,
-        vision_error=scan_error,
-    )
-    display_title = preserve_file_extension(file.filename, extracted["document_title"] or file.filename)
-    category = extracted["category"] or "Document"
-    owner = extracted.get("owner", "")
-    expiry = extracted["expiry_date"] or "None"
-    summary = extracted["summary"]
-    index_text = build_vault_index_text(file.filename, display_title, category, summary, extracted, pdf_text)
-
+    
+    # Create placeholder item
     vault_item = models.Item(
         type="vault_file",
-        title=display_title,
-        subtitle=vault_subtitle(category, owner),
-        body=vault_body_payload(index_text, extracted, summary),
+        title=f"Processing {file.filename}...",
+        subtitle="Analyzing document in background...",
+        body=dump_item_body({"scan_status": "processing", "summary": "AI is analyzing this document. It will appear here shortly."}),
         image_url=image_url,
         workspace=workspace,
-        tags=owner or None,
-        embedding=generate_embedding(index_text)
     )
     db.add(vault_item)
-
-    if expiry.lower() != "none" and len(expiry) > 4:
-        reminder_item = models.Item(
-            type="reminder",
-            title=f"Renew: {display_title}",
-            subtitle=f"Expires {expiry}",
-            workspace=workspace
-        )
-        db.add(reminder_item)
-        send_expiry_email("sottodennis@gmail.com", display_title, expiry)
-
     db.commit()
-    logger.info("Vault upload succeeded for %s", file.filename)
-    return {"status": "success", "scan_status": extracted["scan_status"], "scan_attempts": extracted["scan_attempts"]}
+    db.refresh(vault_item)
+
+    # Spawn celery task
+    process_vault_document_task.delay(vault_item.id, file.filename, filepath, file.content_type or "application/pdf", workspace, image_url)
+    
+    # Broadcast new item created
+    await manager.broadcast({"type": "item_created", "id": vault_item.id})
+
+    return {"status": "processing", "item_id": vault_item.id}
 
 class VoiceMemoRequest(BaseModel):
     transcript: str

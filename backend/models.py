@@ -40,3 +40,14 @@ class AssistantAudit(Base):
     payload = Column(String, nullable=True)
     confirmation_token = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    item_id = Column(Integer, index=True) # Foreign key to items.id
+    chunk_index = Column(Integer, default=0)
+    chunk_text = Column(String)
+    embedding = Column(Vector(1536), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+

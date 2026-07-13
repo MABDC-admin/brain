@@ -678,13 +678,19 @@ export default function VaultPage({ workspace }) {
               </div>
             );
           })()}
-          <div className="flex-1 bg-[#05060a]">
+          <div className="flex-1 bg-[#05060a] relative overflow-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
             {selectedFile.title?.toLowerCase().endsWith('.pdf') ? (
-              <iframe
-                title={selectedFile.title}
-                src={selectedFile.image_url}
+              <object
+                data={selectedFile.image_url}
+                type="application/pdf"
                 className="w-full h-full border-0 bg-white"
-              />
+              >
+                <iframe
+                  title={selectedFile.title}
+                  src={selectedFile.image_url}
+                  className="w-full h-full border-0 bg-white"
+                />
+              </object>
             ) : selectedFile.title?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/) ? (
               <div className="w-full h-full overflow-auto flex items-center justify-center p-4">
                 <img src={selectedFile.image_url} alt={selectedFile.title} className="max-w-full max-h-full object-contain rounded-xl"/>
