@@ -525,3 +525,32 @@ def test_vault_extraction_normalizes_expiry_and_preserves_search_text():
 
     fallback = main.parse_vault_extraction("Labour Contract|10/04/2026|Readable text", "fallback.pdf", "")
     assert fallback["expiry_date"] == "2026-10-04"
+
+
+def test_due_reminder_notifications_are_sent_once_per_day(monkeypatch):
+    sent = []
+
+    def fake_send(to_email, title, date_value, time_value):
+        sent.append({"to": to_email, "title": title, "date": date_value, "time": time_value})
+
+    monkeypatch.setattr(main, "send_reminder_email", fake_send, raising=False)
+    db = TestingSessionLocal()
+    try:
+        reminder = models.Item(
+            type="reminder",
+            title="submit Emirates ID",
+            subtitle="Reminder • Once at 09:00",
+            workspace="Personal",
+            body='{"date":"2026-01-01","time":"09:00","repeat":"Once","status":"open"}',
+        )
+        db.add(reminder)
+        db.commit()
+
+        main.check_due_reminders_and_notify(db=db)
+        main.check_due_reminders_and_notify(db=db)
+
+        assert sent == [{"to": "sottodennis@gmail.com", "title": "submit Emirates ID", "date": "2026-01-01", "time": "09:00"}]
+        db.refresh(reminder)
+        assert "last_notified_date" in reminder.body
+    finally:
+        db.close()

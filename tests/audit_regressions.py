@@ -385,6 +385,15 @@ def test_vault_upload_uses_pdf_text_and_structured_extraction() -> None:
     assert "Original filename:" in backend
 
 
+def test_due_reminder_notifications_are_scheduled_and_deduped() -> None:
+    backend = read("backend/main.py")
+    assert "send_reminder_email" in backend
+    assert "check_due_reminders_and_notify" in backend
+    assert "reminder_is_due" in backend
+    assert "last_notified_date" in backend
+    assert 'CronTrigger(minute="*/5")' in backend
+
+
 def test_rag_query_can_match_vault_titles_without_body() -> None:
     backend = read("backend/main.py")
     assert "matching_docs = [" in backend

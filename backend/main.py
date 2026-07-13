@@ -1712,7 +1712,89 @@ def check_expirations_and_notify():
     finally:
         db.close()
 
+
+def send_reminder_email(to_email: str, title: str, date_value: str, time_value: str = ""):
+    MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
+    when = f"{date_value} {time_value}".strip()
+    if not MABDC_MAIL_API_KEY:
+        logger.info("[MOCK REMINDER] To %s: %s due %s", to_email, title, when)
+        return
+
+    safe_title = html.escape(title)
+    safe_when = html.escape(when or "now")
+    try:
+        resp = httpx.post(
+            "https://api-mail.mabdc.com/v1/emails",
+            headers={"Authorization": f"Bearer {MABDC_MAIL_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "to": to_email,
+                "from": "vault-ai@mabdc.org",
+                "subject": f"Reminder: {title}",
+                "html": f"""
+                <div style="font-family: sans-serif; color: #333;">
+                    <h2>Command Brain Reminder</h2>
+                    <p><strong>{safe_title}</strong></p>
+                    <p>Scheduled for {safe_when}.</p>
+                </div>
+                """,
+            },
+            timeout=15,
+        )
+        if resp.status_code not in [200, 202]:
+            logger.warning("Reminder email API failed: %s %s", resp.status_code, resp.text)
+    except Exception as exc:
+        logger.exception("Failed to send reminder email: %s", exc)
+
+
+def reminder_is_due(meta: dict, now: datetime) -> bool:
+    date_value = meta.get("date") or ""
+    time_value = meta.get("time") or ""
+    if not date_value:
+        return False
+    try:
+        due_date = datetime.strptime(date_value, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    today = now.date()
+    if due_date < today:
+        return True
+    if due_date > today:
+        return False
+    if not time_value:
+        return True
+    try:
+        due_time = datetime.strptime(time_value, "%H:%M").time()
+    except ValueError:
+        return True
+    return now.time() >= due_time
+
+
+def check_due_reminders_and_notify(db: Session | None = None):
+    owns_db = db is None
+    db = db or SessionLocal()
+    try:
+        now = datetime.now()
+        today = now.date().isoformat()
+        reminders = db.query(models.Item).filter(models.Item.type == "reminder").all()
+        for reminder in reminders:
+            meta = parse_item_body(reminder)
+            if meta.get("status") == "done":
+                continue
+            if meta.get("last_notified_date") == today:
+                continue
+            if not reminder_is_due(meta, now):
+                continue
+            send_reminder_email("sottodennis@gmail.com", reminder.title, meta.get("date", ""), meta.get("time", ""))
+            meta["last_notified_date"] = today
+            reminder.body = dump_item_body(meta)
+        db.commit()
+    finally:
+        if owns_db:
+            db.close()
+
+
 scheduler.add_job(check_expirations_and_notify, CronTrigger(hour=8, minute=0))
+scheduler.add_job(check_due_reminders_and_notify, CronTrigger(minute="*/5"))
 
 @app.post("/api/vault_upload")
 async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Company"), db: Session = Depends(get_db)):
