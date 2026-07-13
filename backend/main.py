@@ -248,6 +248,61 @@ def parse_time(text: str) -> str:
     return f"{hour:02d}:00"
 
 
+def normalize_expiry_date(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw or raw.lower() == "none":
+        return "None"
+    iso_match = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", raw)
+    if iso_match:
+        year, month, day = [int(part) for part in iso_match.groups()]
+        try:
+            return datetime(year, month, day).date().isoformat()
+        except ValueError:
+            return raw
+    slash_match = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2})\b", raw)
+    if slash_match:
+        first, second, year = [int(part) for part in slash_match.groups()]
+        month, day = first, second
+        if first > 12 and second <= 12:
+            day, month = first, second
+        try:
+            return datetime(year, month, day).date().isoformat()
+        except ValueError:
+            return raw
+    month_names = {
+        "jan": 1, "january": 1,
+        "feb": 2, "february": 2,
+        "mar": 3, "march": 3,
+        "apr": 4, "april": 4,
+        "may": 5,
+        "jun": 6, "june": 6,
+        "jul": 7, "july": 7,
+        "aug": 8, "august": 8,
+        "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10,
+        "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+    day_month = re.search(r"\b(\d{1,2})\s+([A-Za-z]+)\s+(20\d{2})\b", raw)
+    month_day = re.search(r"\b([A-Za-z]+)\s+(\d{1,2}),?\s+(20\d{2})\b", raw)
+    match = day_month or month_day
+    if match:
+        if day_month:
+            day = int(match.group(1))
+            month = month_names.get(match.group(2).lower())
+            year = int(match.group(3))
+        else:
+            month = month_names.get(match.group(1).lower())
+            day = int(match.group(2))
+            year = int(match.group(3))
+        if month:
+            try:
+                return datetime(year, month, day).date().isoformat()
+            except ValueError:
+                return raw
+    return raw
+
+
 def clean_action_title(text: str) -> str:
     cleaned = re.sub(r"\b(today|tomorrow)\b", "", text or "", flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:at|on)\s+(20\d{2}-\d{2}-\d{2}|[01]?\d|2[0-3]):?[0-5]?\d?\s*(?:am|pm)?\b", "", cleaned, flags=re.IGNORECASE)
@@ -1264,7 +1319,7 @@ def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> 
         return {
             "document_title": str(data.get("document_title") or fallback["document_title"]).strip(),
             "category": str(data.get("category") or fallback["category"]).strip(),
-            "expiry_date": str(data.get("expiry_date") or fallback["expiry_date"]).strip(),
+            "expiry_date": normalize_expiry_date(str(data.get("expiry_date") or fallback["expiry_date"]).strip()),
             "summary": str(data.get("summary") or fallback["summary"]).strip(),
             "full_text": str(data.get("full_text") or fallback["full_text"]).strip(),
         }
@@ -1272,7 +1327,7 @@ def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> 
         parts = (raw_text or "").split("|", 2)
         if len(parts) >= 2:
             fallback["category"] = parts[0].strip() or fallback["category"]
-            fallback["expiry_date"] = parts[1].strip() or fallback["expiry_date"]
+            fallback["expiry_date"] = normalize_expiry_date(parts[1].strip() or fallback["expiry_date"])
             fallback["full_text"] = parts[2].strip() if len(parts) > 2 else fallback["full_text"]
         return fallback
 
@@ -1729,13 +1784,15 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
             logger.exception("AI exception while processing vault upload: %s", e)
 
     extracted = parse_vault_extraction(ocr_text, file.filename, pdf_text)
+    display_title = preserve_file_extension(file.filename, extracted["document_title"] or file.filename)
     category = extracted["category"] or "Document"
     expiry = extracted["expiry_date"] or "None"
     summary = extracted["summary"]
     index_text = "\n\n".join(
         part for part in [
-            f"Filename: {file.filename}",
-            f"Title: {extracted['document_title']}",
+            f"Filename: {display_title}",
+            f"Original filename: {file.filename}",
+            f"Title: {display_title}",
             f"Category: {category}",
             f"Summary: {summary}" if summary else "",
             extracted["full_text"],
@@ -1746,7 +1803,7 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
 
     vault_item = models.Item(
         type="vault_file",
-        title=file.filename,
+        title=display_title,
         subtitle=f"{category} • Processed today",
         body=index_text,
         image_url=image_url,
@@ -1757,12 +1814,12 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
     if expiry.lower() != "none" and len(expiry) > 4:
         reminder_item = models.Item(
             type="reminder",
-            title=f"Renew: {file.filename}",
+            title=f"Renew: {display_title}",
             subtitle=f"Expires {expiry}",
             workspace=workspace
         )
         db.add(reminder_item)
-        send_expiry_email("sottodennis@gmail.com", file.filename, expiry)
+        send_expiry_email("sottodennis@gmail.com", display_title, expiry)
 
     db.commit()
     logger.info("Vault upload succeeded for %s", file.filename)

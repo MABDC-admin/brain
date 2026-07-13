@@ -381,6 +381,8 @@ def test_vault_upload_uses_pdf_text_and_structured_extraction() -> None:
     assert "Return ONLY valid JSON" in backend
     assert "pdf_text" in backend
     assert "body=index_text" in backend
+    assert "display_title = preserve_file_extension" in backend
+    assert "Original filename:" in backend
 
 
 def test_rag_query_can_match_vault_titles_without_body() -> None:

@@ -510,3 +510,18 @@ def test_assistant_vault_document_email_requires_approval(monkeypatch):
     assert confirmed.status_code == 200
     assert confirmed.json()["reply"] == "Sent Jayson NOC.pdf to hr@example.com."
     assert sent == [{"to": "hr@example.com", "title": "Jayson NOC.pdf"}]
+
+
+def test_vault_extraction_normalizes_expiry_and_preserves_search_text():
+    parsed = main.parse_vault_extraction(
+        '{"document_title":"Dennis Labour Contract","category":"Labour Contract","expiry_date":"04 October 2026","summary":"Employment contract","full_text":"Employee Dennis"}',
+        "LABOUR CONTRACT.pdf",
+        "Original PDF text",
+    )
+
+    assert parsed["document_title"] == "Dennis Labour Contract"
+    assert parsed["expiry_date"] == "2026-10-04"
+    assert "Employee Dennis" in parsed["full_text"]
+
+    fallback = main.parse_vault_extraction("Labour Contract|10/04/2026|Readable text", "fallback.pdf", "")
+    assert fallback["expiry_date"] == "2026-10-04"
