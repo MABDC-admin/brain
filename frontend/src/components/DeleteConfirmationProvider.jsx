@@ -20,7 +20,7 @@ export function DeleteConfirmationProvider({ children }) {
       itemName: '',
       message: 'This action cannot be undone.',
       confirmLabel: 'Delete',
-      requiredPhrase: '',
+      requiresPhrase: false,
       ...nextRequest,
     });
     setPhraseInput('');
@@ -30,7 +30,7 @@ export function DeleteConfirmationProvider({ children }) {
     if (!request?.onConfirm) return;
     setBusy(true);
     try {
-      await request.onConfirm();
+      await request.onConfirm(phraseInput.trim());
       setRequest(null);
       setPhraseInput('');
     } finally {
@@ -39,7 +39,7 @@ export function DeleteConfirmationProvider({ children }) {
   };
 
   const value = useMemo(() => ({ confirmDelete }), [confirmDelete]);
-  const phraseMatches = !request?.requiredPhrase || phraseInput.trim() === request.requiredPhrase;
+  const phraseReady = !request?.requiresPhrase || phraseInput.trim().length > 0;
 
   return (
     <DeleteConfirmationContext.Provider value={value}>
@@ -62,7 +62,7 @@ export function DeleteConfirmationProvider({ children }) {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            {request.requiredPhrase && (
+            {request.requiresPhrase && (
               <div className="border-b border-[#242631] px-4 py-4">
                 <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-red-200">
                   Security phrase
@@ -74,7 +74,7 @@ export function DeleteConfirmationProvider({ children }) {
                   autoCapitalize="none"
                   autoComplete="off"
                   spellCheck="false"
-                  placeholder={`Type ${request.requiredPhrase}`}
+                  placeholder="Enter security phrase"
                   className="w-full rounded-2xl border border-red-500/30 bg-[#0b0c10] px-4 py-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-gray-600 focus:border-red-400"
                 />
                 <p className="mt-2 text-xs text-gray-500">
@@ -86,7 +86,7 @@ export function DeleteConfirmationProvider({ children }) {
               <button type="button" onClick={close} disabled={busy} className="rounded-2xl border border-[#2a2b36] bg-[#181a22] px-4 py-3 text-sm font-bold text-gray-200 transition-colors hover:bg-[#20232d] disabled:opacity-50">
                 Cancel
               </button>
-              <button type="button" onClick={handleConfirm} disabled={busy || !phraseMatches} className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-red-950/30 transition-colors hover:bg-red-400 disabled:opacity-60">
+              <button type="button" onClick={handleConfirm} disabled={busy || !phraseReady} className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-red-950/30 transition-colors hover:bg-red-400 disabled:opacity-60">
                 <Trash2 className="h-4 w-4" />
                 {busy ? 'Deleting...' : request.confirmLabel}
               </button>

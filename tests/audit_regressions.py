@@ -285,12 +285,17 @@ def test_vault_deletion_requires_security_phrase() -> None:
     dialog = read("frontend/src/components/DeleteConfirmationProvider.jsx")
     swipe = read("frontend/src/components/SwipeableRow.jsx")
     backend = read("backend/main.py")
-    assert 'requiredPhrase: "banana"' in vault
+    assert "banana" not in vault
+    assert "banana" not in dialog
+    assert "banana" not in backend
     assert "/api/vault/" in vault
-    assert "requiredPhrase" in dialog
+    assert "requiresPhrase" in dialog
     assert "phraseInput" in dialog
+    assert "request.onConfirm(phraseInput.trim())" in dialog
     assert "deleteRequiredPhrase" in swipe
     assert "VAULT_DELETE_PHRASE" in backend
+    assert 'os.getenv("VAULT_DELETE_PHRASE")' in backend
+    assert 'os.getenv("VAULT_DELETE_PHRASE", "banana")' not in backend
     assert '@app.delete("/api/vault/{item_id}")' in backend
 
 
@@ -305,6 +310,8 @@ def test_chat_can_delete_vault_documents_after_phrase() -> None:
     assert "delete_vault_document" in backend
     assert "delete_intent = handle_document_delete_request" in backend
     assert "security phrase" in backend
+    assert "reply with the security phrase." in backend
+    assert "reply with the security phrase:" not in backend
     assert "if current_delete_request:" in backend
     assert "return ask_for_vault_delete_phrase" in backend
 

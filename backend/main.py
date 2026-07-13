@@ -85,7 +85,7 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECAS
 SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
 DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
 DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
-VAULT_DELETE_PHRASE = os.getenv("VAULT_DELETE_PHRASE", "banana")
+VAULT_DELETE_PHRASE = os.getenv("VAULT_DELETE_PHRASE")
 
 
 def normalize_search_text(value: str) -> str:
@@ -115,11 +115,15 @@ def find_vault_document_by_title(title: str, db: Session) -> Optional[models.Ite
 
 
 def has_security_phrase(message: str) -> bool:
+    if not VAULT_DELETE_PHRASE:
+        return False
     tokens = normalize_search_text(message).split()
     return any(secrets.compare_digest(token, VAULT_DELETE_PHRASE.lower()) for token in tokens)
 
 
 def is_exact_security_phrase(message: str) -> bool:
+    if not VAULT_DELETE_PHRASE:
+        return False
     return secrets.compare_digest(normalize_search_text(message), VAULT_DELETE_PHRASE.lower())
 
 
@@ -150,6 +154,8 @@ def delete_vault_item(
     phrase: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
+    if not VAULT_DELETE_PHRASE:
+        raise HTTPException(status_code=500, detail="Vault delete phrase is not configured")
     if not secrets.compare_digest((phrase or "").strip(), VAULT_DELETE_PHRASE):
         raise HTTPException(status_code=403, detail="Security phrase is required")
 
@@ -239,14 +245,14 @@ def pending_delete_title(history: list) -> str:
         if not isinstance(h, dict) or h.get("role") != "assistant":
             continue
         content = h.get("content", "")
-        match = re.search(r"^I found (.+?)\\. To delete it, reply with the security phrase:", content or "")
+        match = re.search(r"^I found (.+?)\\. To delete it, reply with the security phrase\\.", content or "")
         if match:
             return match.group(1)
     return ""
 
 
 def ask_for_vault_delete_phrase(doc: models.Item) -> dict:
-    return {"reply": f"I found {doc.title}. To delete it, reply with the security phrase: {VAULT_DELETE_PHRASE}"}
+    return {"reply": f"I found {doc.title}. To delete it, reply with the security phrase."}
 
 
 def handle_document_delete_request(message: str, history: list, db: Session) -> Optional[dict]:

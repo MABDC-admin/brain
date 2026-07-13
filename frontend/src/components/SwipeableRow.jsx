@@ -72,10 +72,10 @@ export default function SwipeableRow({
       title: deleteTitle,
       itemName: deleteItemName,
       ...(deleteMessage ? { message: deleteMessage } : {}),
-      ...(deleteRequiredPhrase ? { requiredPhrase: deleteRequiredPhrase } : {}),
-      onConfirm: () => {
+      ...(deleteRequiredPhrase ? { requiresPhrase: true } : {}),
+      onConfirm: (phrase) => {
         haptic.delete();
-        return onDelete?.();
+        return onDelete?.(phrase);
       },
     });
   };
