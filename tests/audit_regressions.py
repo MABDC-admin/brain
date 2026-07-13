@@ -176,11 +176,16 @@ def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
     assert "ASSISTANT_TOOL_NAMES" in main
     assert "plan_assistant_tool_with_llm" in main
     assert "execute_assistant_tool" in main
+    assert "execute_assistant_plan" in main
+    assert "assistant_reply_requires_confirmation" in main
     assert "tool_name not in ASSISTANT_TOOL_NAMES" in main
+    assert "step_tool not in ASSISTANT_TOOL_NAMES" in main
     assert "confidence < 0.65" in main
     assert "Rejected unapproved assistant tool" in main
+    assert "Rejected unapproved assistant plan step" in main
     assert 'status="pending"' in main
     assert "confirmation_token=token" in main
+    assert "For multiple actions, use steps" in main
 
 
 def test_task_page_supports_editing_existing_tasks() -> None:

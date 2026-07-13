@@ -305,3 +305,61 @@ def test_assistant_llm_planner_rejects_unapproved_tool(monkeypatch):
 
     audit_rows = client.get("/api/assistant/audit").json()
     assert not any(row["action"] == "run_shell" for row in audit_rows)
+
+
+def test_assistant_multi_step_plan_runs_safe_steps_in_order(monkeypatch):
+    async def fake_plan(message, history):
+        return {
+            "steps": [
+                {"tool": "create_task", "arguments": {"title": "collect emirates id", "due": "", "priority": ""}},
+                {"tool": "create_reminder", "arguments": {"title": "follow up emirates id", "date": "2026-08-01", "time": "09:00"}},
+            ],
+            "confidence": 0.91,
+        }
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+
+    response = chat("create a task to collect emirates id and remind me on 2026-08-01 at 09:00")
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Created task: collect emirates id." in reply
+    assert "Created reminder: follow up emirates id." in reply
+
+    tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
+    reminders = client.get("/items/type/reminder", params={"workspace": "Personal"}).json()
+    assert any(item["title"] == "collect emirates id" for item in tasks)
+    assert any(item["title"] == "follow up emirates id" for item in reminders)
+
+
+def test_assistant_multi_step_plan_pauses_at_confirmation(monkeypatch):
+    sent = []
+
+    async def fake_plan(message, history):
+        return {
+            "steps": [
+                {"tool": "create_task", "arguments": {"title": "prepare payroll note", "due": "", "priority": ""}},
+                {"tool": "send_email", "arguments": {"to": "manager@example.com", "subject": "Payroll", "body": "Payroll note is ready."}},
+                {"tool": "create_note", "arguments": {"title": "after email", "body": "should not run until confirmation phase exists"}},
+            ],
+            "confidence": 0.94,
+        }
+
+    def fake_send(to_email, subject, body):
+        sent.append({"to": to_email, "subject": subject, "body": body})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+    monkeypatch.setattr(main, "send_generic_email", fake_send, raising=False)
+
+    response = chat("prepare payroll note then email the manager")
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Created task: prepare payroll note." in reply
+    assert "Confirm send email to manager@example.com" in reply
+    assert "after email" not in reply
+    assert sent == []
+
+    tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
+    notes = client.get("/items/type/note", params={"workspace": "Personal"}).json()
+    assert any(item["title"] == "prepare payroll note" for item in tasks)
+    assert not any(item["title"] == "after email" for item in notes)

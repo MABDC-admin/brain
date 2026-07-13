@@ -379,11 +379,17 @@ async def plan_assistant_tool_with_llm(message: str, history: list) -> Optional[
             "role": "system",
             "content": (
                 "You classify Command Brain user requests into exactly one approved tool. "
-                "Return only JSON with keys: tool, arguments, confidence. "
+                "Return only JSON with keys: tool, arguments, steps, confidence. "
                 "Use tool='none' when the request is not a direct app action. "
+                "For one action, use tool and arguments. For multiple actions, use steps as an ordered list of "
+                '{"tool":"approved_tool_name","arguments":{...}} objects. '
+                "When the user uses 'and', 'then', commas, or asks for two outcomes such as create plus remind, "
+                "return steps and include every requested outcome in order. Do not collapse a compound request into one tool. "
                 "If the user asks to remember, track, add, create, schedule, mark, rename, delete, or email something, "
                 "choose the closest approved tool instead of saying you cannot do it. "
                 "Examples: 'remember I need to review payroll tomorrow' -> create_task; "
+                "'create task review payroll and remind me tomorrow' -> steps with create_task then create_reminder; "
+                "'create a task to review agent chain and remind me to follow up tomorrow at 09:00' -> steps with create_task then create_reminder; "
                 "'make a note that passport is renewed' -> create_note; "
                 "'mark visa renewal done' -> mark_task_done; "
                 "'rename labour contract to Dennis Labour contract' -> rename_vault_document; "
@@ -419,6 +425,20 @@ async def plan_assistant_tool_with_llm(message: str, history: list) -> Optional[
         confidence = float(confidence)
     except (TypeError, ValueError):
         confidence = 0
+    steps = planned.get("steps") if isinstance(planned.get("steps"), list) else []
+    valid_steps = []
+    for step in steps[:5]:
+        if not isinstance(step, dict):
+            continue
+        step_tool = str(step.get("tool") or "").strip()
+        if step_tool not in ASSISTANT_TOOL_NAMES:
+            logger.warning("Rejected unapproved assistant plan step: %s", step_tool)
+            continue
+        step_arguments = step.get("arguments") if isinstance(step.get("arguments"), dict) else {}
+        valid_steps.append({"tool": step_tool, "arguments": step_arguments})
+    if valid_steps and confidence >= 0.65:
+        return {"steps": valid_steps, "confidence": confidence}
+
     if tool_name == "none" or tool_name not in ASSISTANT_TOOL_NAMES or confidence < 0.65:
         return None
     arguments = planned.get("arguments") if isinstance(planned.get("arguments"), dict) else {}
@@ -569,6 +589,36 @@ def execute_assistant_tool(tool_name: str, arguments: dict, request_text: str, d
         return {"reply": f"Sent {doc.title} to {to_email}." if ok else f"I found {doc.title}, but could not send it: {detail}"}
 
     return None
+
+
+def assistant_reply_requires_confirmation(reply: str) -> bool:
+    return bool(re.search(r"\bReply `confirm [A-Za-z0-9_-]{6,}` to send\.", reply or ""))
+
+
+def execute_assistant_plan(planned_tool: dict, request_text: str, db: Session) -> Optional[dict]:
+    steps = planned_tool.get("steps")
+    if not isinstance(steps, list):
+        tool_name = planned_tool.get("tool")
+        if not tool_name:
+            return None
+        return execute_assistant_tool(tool_name, planned_tool.get("arguments", {}), request_text, db, source="llm")
+
+    replies = []
+    for step in steps[:5]:
+        if not isinstance(step, dict):
+            continue
+        tool_name = step.get("tool")
+        result = execute_assistant_tool(tool_name, step.get("arguments", {}), request_text, db, source="llm_plan")
+        if not result:
+            continue
+        reply = result.get("reply", "")
+        if reply:
+            replies.append(reply)
+        if assistant_reply_requires_confirmation(reply):
+            break
+    if not replies:
+        return None
+    return {"reply": "\n".join(replies)}
 
 
 @app.get("/api/assistant/tools")
@@ -1145,13 +1195,7 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
 
     planned_tool = await plan_assistant_tool_with_llm(message, history)
     if planned_tool:
-        tool_intent = execute_assistant_tool(
-            planned_tool["tool"],
-            planned_tool.get("arguments", {}),
-            message,
-            db,
-            source="llm",
-        )
+        tool_intent = execute_assistant_plan(planned_tool, message, db)
         if tool_intent:
             return tool_intent
 
