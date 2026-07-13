@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, X, Lock, Unlock, Zap, Mic, Share } from 'lucide-react';
+import { ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, X, Lock, Unlock, Zap, Mic, Share } from 'lucide-react';
 import { useHaptic } from '../hooks/useHaptic.js';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
@@ -15,6 +15,7 @@ export default function VaultPage({ workspace }) {
   const [ragAnswer, setRagAnswer] = useState(null);
   const [asking, setAsking] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
   const haptic = useHaptic();
 
@@ -162,7 +163,7 @@ export default function VaultPage({ workspace }) {
       unlockItem(f.id);
     } else {
       if (f.image_url) {
-        window.open(f.image_url, '_blank');
+        setSelectedFile(f);
       } else {
         alert("Preview not available for this item.");
       }
@@ -346,6 +347,45 @@ export default function VaultPage({ workspace }) {
           </div>
         )}
       </div>
+
+      {selectedFile && (
+        <div className="absolute inset-0 z-50 bg-[#0b0c10] flex flex-col page-enter">
+          <div className="px-5 pt-6 pb-4 border-b border-[#1a1b23] shrink-0 flex items-center gap-3">
+            <button onClick={() => setSelectedFile(null)} className="text-gray-400 hover:text-white p-1">
+              <X className="w-6 h-6"/>
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="text-white font-bold text-sm truncate">{selectedFile.title}</p>
+              <p className="text-gray-500 text-xs">{selectedFile.subtitle || 'Vault file'}</p>
+            </div>
+            <button onClick={() => window.open(selectedFile.image_url, '_blank', 'noopener,noreferrer')} className="p-2 bg-[#1a1b23] rounded-xl text-gray-400 hover:text-indigo-400 transition-colors" title="Open externally">
+              <ExternalLink className="w-5 h-5"/>
+            </button>
+          </div>
+          <div className="flex-1 bg-[#05060a]">
+            {selectedFile.title?.toLowerCase().endsWith('.pdf') ? (
+              <iframe
+                title={selectedFile.title}
+                src={selectedFile.image_url}
+                className="w-full h-full border-0 bg-white"
+              />
+            ) : selectedFile.title?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/) ? (
+              <div className="w-full h-full overflow-auto flex items-center justify-center p-4">
+                <img src={selectedFile.image_url} alt={selectedFile.title} className="max-w-full max-h-full object-contain rounded-xl"/>
+              </div>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-center px-8">
+                <LucideFile className="w-14 h-14 text-gray-600 mb-4"/>
+                <p className="text-white font-semibold mb-2">Preview unavailable</p>
+                <p className="text-gray-500 text-sm mb-5">This file type can still be opened in a new browser tab.</p>
+                <button onClick={() => window.open(selectedFile.image_url, '_blank', 'noopener,noreferrer')} className="px-4 py-3 rounded-xl bg-indigo-500 text-white font-semibold">
+                  Open File
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

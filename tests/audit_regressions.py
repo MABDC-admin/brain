@@ -252,6 +252,15 @@ def test_core_command_pages_support_editing_and_dates() -> None:
     assert "openNoteEditor" in note
 
 
+def test_vault_uses_in_app_file_preview() -> None:
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    assert "selectedFile" in vault
+    assert "setSelectedFile" in vault
+    assert "<iframe" in vault
+    assert "application/pdf" in vault or "endsWith('.pdf')" in vault
+    assert "window.open(f.image_url, '_blank')" not in vault
+
+
 if __name__ == "__main__":
     tests = [
         test_no_hardcoded_localhost_api_urls,
@@ -278,6 +287,7 @@ if __name__ == "__main__":
         test_workspace_queries_are_url_encoded,
         test_delete_confirmation_uses_shared_ui,
         test_core_command_pages_support_editing_and_dates,
+        test_vault_uses_in_app_file_preview,
     ]
 
     failures = []
