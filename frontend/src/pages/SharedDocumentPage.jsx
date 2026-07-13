@@ -47,6 +47,8 @@ export default function SharedDocumentPage() {
     );
   }
 
+  const sharedFileUrl = doc.image_url ? `${API}/api/shared/${token}/file` : '';
+
   return (
     <div className="flex-1 bg-[#0b0c10] text-white min-h-screen flex flex-col items-center py-12 px-6">
       <div className="max-w-2xl w-full">
@@ -72,6 +74,18 @@ export default function SharedDocumentPage() {
           </div>
 
           <div className="prose prose-invert max-w-none">
+            {sharedFileUrl && (
+              <div className="mb-6">
+                <a
+                  href={sharedFileUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center justify-center rounded-xl bg-indigo-500 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-400"
+                >
+                  Open shared file
+                </a>
+              </div>
+            )}
             {doc.body ? (
               <div className="text-gray-300 leading-relaxed whitespace-pre-wrap font-serif text-lg">
                 {doc.body}

@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import sys
 import tempfile
+from pathlib import Path as _Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,6 +137,72 @@ def test_auth_protects_private_routes_when_enabled(monkeypatch):
 
     after_logout = client.get("/items", params={"workspace": "Personal"})
     assert after_logout.status_code == 401
+
+
+def test_static_uploads_require_auth_but_shared_file_link_is_public(monkeypatch):
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True, raising=False)
+    monkeypatch.setattr(main, "AUTH_EMAIL", "sottodennis@gmail.com", raising=False)
+    monkeypatch.setattr(main, "AUTH_PASSWORD", "Denskie123", raising=False)
+    monkeypatch.setattr(main, "SESSION_SECRET", "test-session-secret", raising=False)
+
+    uploads = ROOT / "uploads"
+    uploads.mkdir(exist_ok=True)
+    upload_path = uploads / "private-vault.pdf"
+    upload_path.write_bytes(b"%PDF-1.4 private")
+
+    created = client.post(
+        "/api/auth/login",
+        json={"email": "sottodennis@gmail.com", "password": "Denskie123"},
+    )
+    assert created.status_code == 200
+    item = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "Private Vault.pdf",
+            "subtitle": "Document",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/private-vault.pdf",
+        },
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+    client.post("/api/auth/logout")
+
+    direct = client.get("/static/private-vault.pdf")
+    assert direct.status_code == 401
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "sottodennis@gmail.com", "password": "Denskie123"},
+    )
+    assert login.status_code == 200
+    authed_direct = client.get("/static/private-vault.pdf")
+    assert authed_direct.status_code == 200
+
+    share = client.post(f"/items/{item_id}/share")
+    assert share.status_code == 200
+    token = share.json()["share_token"]
+    client.post("/api/auth/logout")
+
+    shared_file = client.get(f"/api/shared/{token}/file")
+    assert shared_file.status_code == 200
+    assert shared_file.content == b"%PDF-1.4 private"
+
+
+def test_daily_backup_copies_database_and_uploads_archive(monkeypatch, tmp_path):
+    backup_dir = tmp_path / "backups"
+    uploads = ROOT / "uploads"
+    uploads.mkdir(exist_ok=True)
+    (uploads / "backup-test.pdf").write_bytes(b"backup pdf")
+    monkeypatch.setattr(main, "BACKUP_DIR", str(backup_dir), raising=False)
+
+    result = main.perform_daily_backup(now=main.datetime(2026, 7, 13, 2, 0, 0))
+
+    assert _Path(result["database_backup"]).exists()
+    assert _Path(result["uploads_backup"]).exists()
+    assert _Path(result["database_backup"]).name.startswith("app-20260713-020000")
+    assert _Path(result["uploads_backup"]).name.startswith("uploads-20260713-020000")
 
 
 def test_assistant_creates_task_note_expense_and_reminder():

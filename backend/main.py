@@ -9,12 +9,14 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import tarfile
 import uuid
 
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query, Response
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -34,6 +36,7 @@ AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", secrets.token_urlsafe(32))
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "true").lower() not in {"0", "false", "no", "off"}
 SESSION_COOKIE = "commandbrain_session"
+BACKUP_DIR = os.getenv("BACKUP_DIR", "/home/admin/app/backups")
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -145,13 +148,19 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE, path="/", secure=True, samesite="lax")
 
 
+def upload_filename_from_url(image_url: str | None) -> str:
+    if not image_url or "/static/" not in image_url:
+        return ""
+    filename = image_url.rsplit("/static/", 1)[-1].split("?", 1)[0].split("#", 1)[0]
+    return os.path.basename(filename)
+
+
 def is_public_path(path: str, method: str) -> bool:
     if method.upper() == "OPTIONS":
         return True
     return (
         path in {"/api/auth/login", "/api/auth/me", "/api/auth/logout"}
         or path.startswith("/api/shared/")
-        or path.startswith("/static/")
         or path in {"/docs", "/redoc", "/openapi.json"}
     )
 
@@ -159,7 +168,7 @@ def is_public_path(path: str, method: str) -> bool:
 @app.middleware("http")
 async def require_auth_session(request: Request, call_next):
     path = request.url.path
-    private_path = path.startswith("/api/") or path.startswith("/items")
+    private_path = path.startswith("/api/") or path.startswith("/items") or path.startswith("/static/")
     if AUTH_REQUIRED and private_path and not is_public_path(path, request.method):
         if not auth_is_configured():
             return JSONResponse({"detail": "Authentication is not configured"}, status_code=503)
@@ -945,10 +954,7 @@ def is_exact_security_phrase(message: str) -> bool:
 
 
 def local_upload_path(image_url: str | None) -> Optional[str]:
-    if not image_url or "/static/" not in image_url:
-        return None
-    filename = image_url.rsplit("/static/", 1)[-1].split("?", 1)[0].split("#", 1)[0]
-    filename = os.path.basename(filename)
+    filename = upload_filename_from_url(image_url)
     if not filename:
         return None
     return os.path.join("uploads", filename)
@@ -2227,8 +2233,35 @@ def check_due_reminders_and_notify(db: Session | None = None):
             db.close()
 
 
+def perform_daily_backup(now: datetime | None = None) -> dict:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+    db_path = engine.url.database
+    if not db_path:
+        raise RuntimeError("Database path is not available for backup")
+    database_backup = os.path.join(BACKUP_DIR, f"app-{timestamp}.db")
+    shutil.copy2(db_path, database_backup)
+
+    uploads_backup = os.path.join(BACKUP_DIR, f"uploads-{timestamp}.tar.gz")
+    with tarfile.open(uploads_backup, "w:gz") as archive:
+        if os.path.isdir("uploads"):
+            archive.add("uploads", arcname="uploads")
+
+    logger.info("Daily backup created: %s and %s", database_backup, uploads_backup)
+    return {"database_backup": database_backup, "uploads_backup": uploads_backup}
+
+
+def run_scheduled_backup():
+    try:
+        perform_daily_backup()
+    except Exception as exc:
+        logger.exception("Daily backup failed: %s", exc)
+
+
 scheduler.add_job(check_expirations_and_notify, CronTrigger(hour=8, minute=0))
 scheduler.add_job(check_due_reminders_and_notify, CronTrigger(minute="*/5"))
+scheduler.add_job(run_scheduled_backup, CronTrigger(hour=2, minute=0))
 
 @app.post("/api/vault_upload")
 async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Company"), db: Session = Depends(get_db)):
@@ -2362,3 +2395,17 @@ def get_shared_item(token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='Link expired')
         
     return db_item
+
+
+@app.get('/api/shared/{token}/file')
+def get_shared_item_file(token: str, db: Session = Depends(get_db)):
+    db_item = db.query(models.Item).filter(models.Item.share_token == token).first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail='Link invalid or expired')
+    if db_item.share_expires_at and db_item.share_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=404, detail='Link expired')
+
+    upload_path = local_upload_path(db_item.image_url)
+    if not upload_path or not os.path.exists(upload_path):
+        raise HTTPException(status_code=404, detail='Shared file not found')
+    return FileResponse(upload_path, filename=db_item.title or upload_filename_from_url(db_item.image_url) or "document")

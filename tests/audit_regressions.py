@@ -69,6 +69,20 @@ def test_login_auth_uses_environment_and_http_only_cookie() -> None:
     assert "Denskie123" not in settings
 
 
+def test_static_uploads_are_private_and_backups_are_scheduled() -> None:
+    backend = read("backend/main.py")
+    shared_page = read("frontend/src/pages/SharedDocumentPage.jsx")
+    public_path_block = backend.split("def is_public_path", 1)[1].split("@app.middleware", 1)[0]
+    assert 'path.startswith("/static/")' in backend
+    assert 'path.startswith("/static/")' not in public_path_block
+    assert "@app.get('/api/shared/{token}/file')" in backend
+    assert "perform_daily_backup" in backend
+    assert "BACKUP_DIR" in backend
+    assert "run_scheduled_backup" in backend
+    assert "CronTrigger(hour=2, minute=0)" in backend
+    assert "/api/shared/${token}/file" in shared_page
+
+
 def test_frontend_has_no_development_console_log() -> None:
     assert_absent("frontend/src/main.jsx", "console.log")
 
