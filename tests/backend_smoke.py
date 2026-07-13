@@ -431,3 +431,82 @@ def test_assistant_pending_email_can_be_cancelled(monkeypatch):
     confirm = chat(f"confirm {token}")
     assert confirm.status_code == 200
     assert "could not find a pending email" in confirm.json()["reply"]
+
+
+def test_assistant_vault_delete_uses_approval_preview(monkeypatch):
+    async def fake_plan(message, history):
+        return {
+            "tool": "delete_vault_document",
+            "arguments": {"query": "labour contract"},
+            "confidence": 0.94,
+        }
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+    created = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "LABOUR CONTRACT.pdf",
+            "subtitle": "Employment contract",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/labour-contract.pdf",
+        },
+    )
+    assert created.status_code == 200
+    item_id = created.json()["id"]
+
+    draft = chat("delete the labour contract document")
+    assert draft.status_code == 200
+    assert "Confirm delete vault document" in draft.json()["reply"]
+    assert draft.json()["approval"]["action"] == "delete_vault_document"
+    assert draft.json()["approval"]["details"]["document_title"] == "LABOUR CONTRACT.pdf"
+
+    still_there = client.get("/items/type/vault_file", params={"workspace": "Personal"}).json()
+    assert any(item["id"] == item_id for item in still_there)
+
+    cancelled = chat(draft.json()["approval"]["cancel_command"])
+    assert cancelled.status_code == 200
+    assert "Canceled pending vault delete" in cancelled.json()["reply"]
+    still_there = client.get("/items/type/vault_file", params={"workspace": "Personal"}).json()
+    assert any(item["id"] == item_id for item in still_there)
+
+
+def test_assistant_vault_document_email_requires_approval(monkeypatch):
+    sent = []
+
+    async def fake_plan(message, history):
+        return {
+            "tool": "send_vault_document_email",
+            "arguments": {"query": "noc", "to": "hr@example.com"},
+            "confidence": 0.94,
+        }
+
+    def fake_send(to_email, item):
+        sent.append({"to": to_email, "title": item.title})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+    monkeypatch.setattr(main, "send_document_email", fake_send, raising=False)
+    created = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "Jayson NOC.pdf",
+            "subtitle": "NOC",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/jayson-noc.pdf",
+        },
+    )
+    assert created.status_code == 200
+
+    draft = chat("send Jayson NOC to hr@example.com")
+    assert draft.status_code == 200
+    assert "Confirm send vault document" in draft.json()["reply"]
+    assert draft.json()["approval"]["action"] == "send_vault_document_email"
+    assert draft.json()["approval"]["details"]["document_title"] == "Jayson NOC.pdf"
+    assert sent == []
+
+    confirmed = chat(draft.json()["approval"]["confirm_command"])
+    assert confirmed.status_code == 200
+    assert confirmed.json()["reply"] == "Sent Jayson NOC.pdf to hr@example.com."
+    assert sent == [{"to": "hr@example.com", "title": "Jayson NOC.pdf"}]

@@ -548,19 +548,26 @@ def execute_assistant_tool(
 
     if tool_name == "delete_vault_document":
         query = str(arguments.get("query") or "").strip()
-        phrase = str(arguments.get("security_phrase") or "").strip()
         if not query:
             return {"reply": "Tell me the exact vault document to delete."}
         doc = find_best_vault_document(query, db)
         if not doc:
             return {"reply": "I could not find the vault document to delete."}
-        if not VAULT_DELETE_PHRASE or not secrets.compare_digest(phrase, VAULT_DELETE_PHRASE):
-            return ask_for_vault_delete_phrase(doc)
-        doc_title = doc.title
-        doc_id = doc.id
-        delete_vault_document(doc, db)
-        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="vault_file", target_id=doc_id, summary=f"Deleted {doc_title}", request_text=request_text, payload=payload)
-        return {"reply": f"Deleted {doc_title} from the vault."}
+        approval = create_pending_approval(
+            db,
+            action=tool_name,
+            target_type="vault_file",
+            target_id=doc.id,
+            summary=f"Pending delete {doc.title}",
+            request_text=request_text,
+            details={"document_title": doc.title, "document_id": doc.id},
+            payload={**payload, "document_id": doc.id, "document_title": doc.title},
+            remaining_steps=remaining_steps,
+        )
+        return {
+            "reply": f"Confirm delete vault document {doc.title}? Reply `confirm {approval['token']}` to delete.",
+            "approval": approval,
+        }
 
     if tool_name == "send_email":
         to_email = str(arguments.get("to") or "").strip()
@@ -594,11 +601,21 @@ def execute_assistant_tool(
         doc = find_best_vault_document(query, db)
         if not doc:
             return {"reply": f"I could not find the vault document to send to {to_email}."}
-        ok, detail = send_document_email(to_email, doc)
-        status = "completed" if ok else "failed"
-        summary = f"Sent {doc.title} to {to_email}" if ok else f"Could not send {doc.title} to {to_email}: {detail}"
-        audit_action(db, action=tool_name, risk_level=risk_level, status=status, target_type="vault_file", target_id=doc.id, summary=summary, request_text=request_text, payload=payload)
-        return {"reply": f"Sent {doc.title} to {to_email}." if ok else f"I found {doc.title}, but could not send it: {detail}"}
+        approval = create_pending_approval(
+            db,
+            action=tool_name,
+            target_type="vault_file",
+            target_id=doc.id,
+            summary=f"Pending send {doc.title} to {to_email}",
+            request_text=request_text,
+            details={"to": to_email, "document_title": doc.title, "document_id": doc.id},
+            payload={**payload, "to": to_email, "document_id": doc.id, "document_title": doc.title},
+            remaining_steps=remaining_steps,
+        )
+        return {
+            "reply": f"Confirm send vault document {doc.title} to {to_email}? Reply `confirm {approval['token']}` to send.",
+            "approval": approval,
+        }
 
     return None
 
@@ -830,6 +847,35 @@ def approval_payload(action: str, token: str, details: dict, remaining_steps: li
     }
 
 
+def create_pending_approval(
+    db: Session,
+    *,
+    action: str,
+    target_type: str,
+    summary: str,
+    request_text: str,
+    details: dict,
+    payload: dict,
+    remaining_steps: list | None = None,
+    target_id: int | None = None,
+) -> dict:
+    token = secrets.token_urlsafe(6)
+    full_payload = {**payload, "remaining_steps": remaining_steps or []}
+    audit_action(
+        db,
+        action=action,
+        risk_level=ASSISTANT_TOOL_RISK.get(action, 3),
+        status="pending",
+        target_type=target_type,
+        target_id=target_id,
+        summary=summary,
+        request_text=request_text,
+        payload=full_payload,
+        confirmation_token=token,
+    )
+    return approval_payload(action, token, details, remaining_steps)
+
+
 def looks_like_compound_action_request(message: str) -> bool:
     text = normalize_search_text(message)
     if not text:
@@ -849,26 +895,32 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
         pending = (
             db.query(models.AssistantAudit)
             .filter(
-                models.AssistantAudit.action == "send_email",
                 models.AssistantAudit.status == "pending",
                 models.AssistantAudit.confirmation_token == cancel_token,
             )
             .first()
         )
         if not pending:
-            return {"reply": "I could not find a pending email for that cancellation token."}
+            return {"reply": "I could not find a pending action for that cancellation token."}
         payload = json.loads(pending.payload or "{}")
         pending.status = "canceled"
-        pending.summary = f"Canceled email to {payload.get('to', 'recipient')}"
+        if pending.action == "delete_vault_document":
+            pending.summary = f"Canceled vault delete for {payload.get('document_title', 'document')}"
+            reply = f"Canceled pending vault delete for {payload.get('document_title', 'document')}."
+        elif pending.action == "send_vault_document_email":
+            pending.summary = f"Canceled vault document email to {payload.get('to', 'recipient')}"
+            reply = f"Canceled pending vault document email to {payload.get('to', 'recipient')}."
+        else:
+            pending.summary = f"Canceled email to {payload.get('to', 'recipient')}"
+            reply = f"Canceled pending email to {payload.get('to', 'recipient')}."
         db.commit()
-        return {"reply": f"Canceled pending email to {payload.get('to', 'recipient')}."}
+        return {"reply": reply}
 
     token = confirmation_token_from_message(message)
     if token:
         pending = (
             db.query(models.AssistantAudit)
             .filter(
-                models.AssistantAudit.action == "send_email",
                 models.AssistantAudit.status == "pending",
                 models.AssistantAudit.confirmation_token == token,
             )
@@ -877,6 +929,51 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
         if not pending:
             return {"reply": "I could not find a pending email for that confirmation token."}
         payload = json.loads(pending.payload or "{}")
+        if pending.action == "delete_vault_document":
+            doc = db.query(models.Item).filter(models.Item.id == payload.get("document_id"), models.Item.type == "vault_file").first()
+            if not doc:
+                pending.status = "failed"
+                pending.summary = "Vault document no longer exists"
+                db.commit()
+                return {"reply": "I could not delete it because the vault document no longer exists."}
+            doc_title = doc.title
+            doc_id = doc.id
+            delete_vault_document(doc, db)
+            pending.status = "completed"
+            pending.summary = f"Deleted {doc_title}"
+            db.commit()
+            replies = [f"Deleted {doc_title} from the vault."]
+            remaining_steps = payload.get("remaining_steps") if isinstance(payload.get("remaining_steps"), list) else []
+            if remaining_steps:
+                resumed = execute_assistant_plan({"steps": remaining_steps}, pending.request_text or message, db)
+                if resumed and resumed.get("reply"):
+                    replies.append(resumed["reply"])
+            return {"reply": "\n".join(replies)}
+
+        if pending.action == "send_vault_document_email":
+            doc = db.query(models.Item).filter(models.Item.id == payload.get("document_id"), models.Item.type == "vault_file").first()
+            if not doc:
+                pending.status = "failed"
+                pending.summary = "Vault document no longer exists"
+                db.commit()
+                return {"reply": "I could not send it because the vault document no longer exists."}
+            ok, detail = send_document_email(payload["to"], doc)
+            if ok:
+                pending.status = "completed"
+                pending.summary = f"Sent {doc.title} to {payload['to']}"
+                db.commit()
+                replies = [f"Sent {doc.title} to {payload['to']}."]
+                remaining_steps = payload.get("remaining_steps") if isinstance(payload.get("remaining_steps"), list) else []
+                if remaining_steps:
+                    resumed = execute_assistant_plan({"steps": remaining_steps}, pending.request_text or message, db)
+                    if resumed and resumed.get("reply"):
+                        replies.append(resumed["reply"])
+                return {"reply": "\n".join(replies)}
+            pending.status = "failed"
+            pending.summary = f"Vault document email failed: {detail}"
+            db.commit()
+            return {"reply": f"I could not send the vault document: {detail}"}
+
         ok, detail = send_generic_email(payload["to"], payload["subject"], payload["body"])
         if ok:
             pending.status = "completed"
@@ -933,12 +1030,20 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
     if not doc:
         return {"reply": f"I could not find the vault document to send to {to_email}. Try: send GEMA to {to_email}"}
 
-    ok, detail = send_document_email(to_email, doc)
-    if ok:
-        audit_action(db, action="send_vault_document_email", risk_level=3, status="completed", target_type="vault_file", target_id=doc.id, summary=f"Sent {doc.title} to {to_email}", request_text=message)
-        return {"reply": f"Sent {doc.title} to {to_email}."}
-    audit_action(db, action="send_vault_document_email", risk_level=3, status="failed", target_type="vault_file", target_id=doc.id, summary=f"Could not send {doc.title} to {to_email}: {detail}", request_text=message)
-    return {"reply": f"I found {doc.title}, but could not send it: {detail}"}
+    approval = create_pending_approval(
+        db,
+        action="send_vault_document_email",
+        target_type="vault_file",
+        target_id=doc.id,
+        summary=f"Pending send {doc.title} to {to_email}",
+        request_text=message,
+        details={"to": to_email, "document_title": doc.title, "document_id": doc.id},
+        payload={"to": to_email, "document_id": doc.id, "document_title": doc.title},
+    )
+    return {
+        "reply": f"Confirm send vault document {doc.title} to {to_email}? Reply `confirm {approval['token']}` to send.",
+        "approval": approval,
+    }
 
 
 def handle_document_rename_request(message: str, history: list, db: Session) -> Optional[dict]:
@@ -1092,7 +1197,20 @@ def handle_document_delete_request(message: str, history: list, db: Session) -> 
         return {"reply": "I could not find the vault document to delete. Tell me the document name, then I will ask for the security phrase."}
 
     if current_delete_request:
-        return ask_for_vault_delete_phrase(doc)
+        approval = create_pending_approval(
+            db,
+            action="delete_vault_document",
+            target_type="vault_file",
+            target_id=doc.id,
+            summary=f"Pending delete {doc.title}",
+            request_text=message,
+            details={"document_title": doc.title, "document_id": doc.id},
+            payload={"document_id": doc.id, "document_title": doc.title},
+        )
+        return {
+            "reply": f"Confirm delete vault document {doc.title}? Reply `confirm {approval['token']}` to delete.",
+            "approval": approval,
+        }
 
     doc_title = doc.title
     doc_id = doc.id

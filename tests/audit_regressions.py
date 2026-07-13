@@ -191,8 +191,11 @@ def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
     assert "remaining_steps" in main
     assert 'execute_assistant_plan({"steps": remaining_steps}' in main
     assert "approval_payload" in main
+    assert "create_pending_approval" in main
     assert "cancellation_token_from_message" in main
     assert 'status = "canceled"' in main
+    assert "delete_vault_document" in main
+    assert "send_vault_document_email" in main
 
 
 def test_chat_page_renders_structured_approval_controls() -> None:
@@ -202,6 +205,7 @@ def test_chat_page_renders_structured_approval_controls() -> None:
     assert "confirm_command" in chat
     assert "cancel_command" in chat
     assert "remaining_steps" in chat
+    assert "document_title" in chat
     assert "ShieldCheck" in chat
 
 
@@ -341,7 +345,7 @@ def test_vault_deletion_requires_security_phrase() -> None:
     assert '@app.delete("/api/vault/{item_id}")' in backend
 
 
-def test_chat_can_delete_vault_documents_after_phrase() -> None:
+def test_chat_can_delete_vault_documents_after_approval() -> None:
     backend = read("backend/main.py")
     assert "handle_document_delete_request" in backend
     assert "DELETE_WORD_RE" in backend
@@ -351,11 +355,11 @@ def test_chat_can_delete_vault_documents_after_phrase() -> None:
     assert "find_vault_document_by_title" in backend
     assert "delete_vault_document" in backend
     assert "delete_intent = handle_document_delete_request" in backend
-    assert "security phrase" in backend
-    assert "reply with the security phrase." in backend
+    assert "create_pending_approval" in backend
+    assert "Confirm delete vault document" in backend
     assert "reply with the security phrase:" not in backend
     assert "if current_delete_request:" in backend
-    assert "return ask_for_vault_delete_phrase" in backend
+    assert "return ask_for_vault_delete_phrase" not in backend
 
 
 def test_chat_can_rename_vault_documents() -> None:
