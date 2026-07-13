@@ -227,6 +227,31 @@ def test_delete_confirmation_uses_shared_ui() -> None:
     assert "window.confirm" not in settings
 
 
+def test_core_command_pages_support_editing_and_dates() -> None:
+    task = read("frontend/src/pages/TaskPage.jsx")
+    reminder = read("frontend/src/pages/ReminderPage.jsx")
+    expense = read("frontend/src/pages/ExpensePage.jsx")
+    note = read("frontend/src/pages/NotePage.jsx")
+
+    assert "editingTask" in task
+    assert "method: targetTask ? 'PUT' : 'POST'" in task
+    assert 'type="date"' in task
+
+    assert "editingReminder" in reminder
+    assert "method: targetReminder ? 'PUT' : 'POST'" in reminder
+    assert 'type="date"' in reminder
+    assert "openReminderEditor" in reminder
+
+    assert "editingExpense" in expense
+    assert "method: targetExpense ? 'PUT' : 'POST'" in expense
+    assert 'type="date"' in expense
+    assert "openExpenseEditor" in expense
+
+    assert "editingNote" in note
+    assert "method: targetNote ? 'PUT' : 'POST'" in note
+    assert "openNoteEditor" in note
+
+
 if __name__ == "__main__":
     tests = [
         test_no_hardcoded_localhost_api_urls,
@@ -252,6 +277,7 @@ if __name__ == "__main__":
         test_workspace_selector_is_clickable_on_touch_devices,
         test_workspace_queries_are_url_encoded,
         test_delete_confirmation_uses_shared_ui,
+        test_core_command_pages_support_editing_and_dates,
     ]
 
     failures = []

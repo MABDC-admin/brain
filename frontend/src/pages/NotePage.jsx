@@ -5,8 +5,9 @@ import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const TABS = ['ALL', 'PINNED', 'TAGS'];
+const EMPTY_FORM = { title: '', body: '' };
 
-function NoteEditor({ note, onClose, onDelete }) {
+function NoteEditor({ note, onClose, onDelete, onEdit }) {
   const [showQr, setShowQr] = React.useState(false);
   const { confirmDelete } = useDeleteConfirmation();
   const shareText = `${note.title}\n${note.body || ''}`.trim();
@@ -59,6 +60,12 @@ function NoteEditor({ note, onClose, onDelete }) {
           {note.body || 'No additional content. Created from the quick-add or scanned document.'}
         </p>
       </div>
+      <div className="p-5 pt-3 shrink-0 border-t border-[#1a1b23]">
+        <button onClick={() => onEdit(note)}
+          className="w-full py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold transition-colors">
+          Edit Note
+        </button>
+      </div>
     </div>
   );
 }
@@ -68,8 +75,9 @@ export default function NotePage({ loadItems, workspace }) {
   const [notes,        setNotes]       = useState([]);
   const [pinned,       setPinned]      = useState([]);
   const [showAdd,      setShowAdd]     = useState(false);
+  const [editingNote,  setEditingNote] = useState(null);
   const [selectedNote, setSelectedNote] = useState(null);
-  const [form,         setForm]        = useState({ title: '', body: '' });
+  const [form,         setForm]        = useState(EMPTY_FORM);
   const [saving,       setSaving]      = useState(false);
   const [searchOpen,   setSearchOpen]  = useState(false);
   const [searchQuery,  setSearchQuery] = useState('');
@@ -92,17 +100,35 @@ export default function NotePage({ loadItems, workspace }) {
     setSelectedNote(null);
   };
 
+  const closeNoteSheet = () => {
+    setShowAdd(false);
+    setEditingNote(null);
+    setForm(EMPTY_FORM);
+  };
+
+  const openNewNote = () => {
+    setEditingNote(null);
+    setForm(EMPTY_FORM);
+    setShowAdd(true);
+  };
+
+  const openNoteEditor = (note) => {
+    setSelectedNote(null);
+    setEditingNote(note);
+    setForm({ title: note.title || '', body: note.body || '' });
+    setShowAdd(true);
+  };
+
   const addNote = async () => {
     if (!form.title.trim()) return;
     setSaving(true);
-    // Close immediately
-    setShowAdd(false);
-    setForm({ title: '', body: '' });
+    const targetNote = editingNote;
+    closeNoteSheet();
     try {
-      await fetch(`${API}/items`, {
-        method: 'POST',
+      await fetch(targetNote ? `${API}/items/${targetNote.id}` : `${API}/items`, {
+        method: targetNote ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'note', title: form.title, subtitle: `Note • Today`, body: form.body, workspace: workspace || 'Personal' }),
+        body: JSON.stringify({ type: 'note', title: form.title.trim(), subtitle: targetNote?.subtitle || `Note • Today`, body: form.body, workspace: workspace || 'Personal' }),
       });
     } catch {}
     load();
@@ -194,7 +220,7 @@ export default function NotePage({ loadItems, workspace }) {
 
       {/* Add button */}
       <div className="px-5 pt-3 pb-5 shrink-0">
-        <button onClick={() => setShowAdd(true)}
+        <button onClick={openNewNote}
           className="w-full py-4 rounded-full font-semibold text-white flex items-center justify-center gap-2 transition-all hover:opacity-90 active:scale-[0.98]"
           style={{ background: 'linear-gradient(135deg, #a855f7, #7c3aed)' }}>
           <Plus className="w-5 h-5"/> New Note
@@ -203,11 +229,11 @@ export default function NotePage({ loadItems, workspace }) {
 
       {/* Add Note Modal */}
       {showAdd && (
-        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end" onClick={() => setShowAdd(false)}>
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end" onClick={closeNoteSheet}>
           <div className="bg-[#0f1015] rounded-t-3xl w-full p-6 border border-[#2a2b36]" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-5">
-              <h3 className="text-lg font-bold text-white">New Note</h3>
-              <button onClick={() => setShowAdd(false)}><X className="w-5 h-5 text-gray-400"/></button>
+              <h3 className="text-lg font-bold text-white">{editingNote ? 'Edit Note' : 'New Note'}</h3>
+              <button onClick={closeNoteSheet}><X className="w-5 h-5 text-gray-400"/></button>
             </div>
             <div className="space-y-3">
               <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
@@ -219,7 +245,7 @@ export default function NotePage({ loadItems, workspace }) {
               <button onClick={addNote} disabled={saving || !form.title.trim()}
                 className="w-full py-3 rounded-xl font-semibold text-white disabled:opacity-40 transition-colors"
                 style={{ background: 'linear-gradient(135deg, #a855f7, #7c3aed)' }}>
-                {saving ? 'Saving…' : 'Save Note'}
+                {saving ? 'Saving…' : editingNote ? 'Update Note' : 'Save Note'}
               </button>
             </div>
           </div>
@@ -228,7 +254,7 @@ export default function NotePage({ loadItems, workspace }) {
 
       {/* Note detail */}
       {selectedNote && (
-        <NoteEditor note={selectedNote} onClose={() => setSelectedNote(null)} onDelete={deleteNote}/>
+        <NoteEditor note={selectedNote} onClose={() => setSelectedNote(null)} onDelete={deleteNote} onEdit={openNoteEditor}/>
       )}
     </div>
   );

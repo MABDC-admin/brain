@@ -7,9 +7,11 @@ const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.ma
 const CATEGORIES = ['Food & Drinks', 'Transport', 'Shopping', 'Bills & Utilities', 'Entertainment', 'Health', 'Other'];
 const CAT_COLORS = { 'Food & Drinks': '#3b82f6', Transport: '#22c55e', Shopping: '#f97316', 'Bills & Utilities': '#a855f7', Entertainment: '#ec4899', Health: '#14b8a6', Other: '#9ca3af' };
 const CAT_ICONS  = { 'Food & Drinks': '🍽️', Transport: '🚌', Shopping: '🛍️', 'Bills & Utilities': '⚡', Entertainment: '🎬', Health: '💊', Other: '···' };
+const EMPTY_FORM = { amount: '', merchant: '', category: 'Food & Drinks', notes: '', recurring: '', date: '' };
 
 const getLS = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } };
 const setLS = (k, v)   => localStorage.setItem(k, JSON.stringify(v));
+const todayKey = () => new Date().toISOString().slice(0, 10);
 
 function Modal({ title, onClose, children }) {
   return (
@@ -25,12 +27,35 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+function parseExpenseBody(expense) {
+  try {
+    const parsed = JSON.parse(expense.body || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return {
+        amount: parsed.amount || '',
+        merchant: parsed.merchant || '',
+        category: parsed.category || '',
+        notes: parsed.notes || '',
+        recurring: parsed.recurring || '',
+        date: parsed.date || '',
+      };
+    }
+  } catch {}
+  return {};
+}
+
+function expenseDateLabel(date) {
+  if (!date) return 'Today';
+  return new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export default function ExpensePage({ loadItems, workspace }) {
   const [expenses,   setExpenses]   = useState([]);
   const [showAdd,    setShowAdd]    = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
   const [showBudget, setShowBudget] = useState(false);
   const [activeTab,  setActiveTab]  = useState('Overview');
-  const [form,       setForm]       = useState({ amount: '', merchant: '', category: 'Food & Drinks', notes: '', recurring: '' });
+  const [form,       setForm]       = useState(EMPTY_FORM);
   const [budgets,    setBudgets]    = useState(() => getLS('expense_budgets', {}));
   const [budgetForm, setBudgetForm] = useState({});
   const [saving,     setSaving]     = useState(false);
@@ -46,6 +71,7 @@ export default function ExpensePage({ loadItems, workspace }) {
 
   const parseAmount   = (title) => { const m = title?.match(/^(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
   const parseCategory = (sub)   => CATEGORIES.find(c => sub?.includes(c)) || 'Other';
+  const parseMerchant = (title) => title?.replace(/^(\d+(?:\.\d+)?)\s+AED\s+/, '') || '';
 
   const totals = {};
   CATEGORIES.forEach(c => { totals[c] = 0; });
@@ -59,20 +85,59 @@ export default function ExpensePage({ loadItems, workspace }) {
     setExpenses(p => p.filter(x => x.id !== id));
   };
 
+  const closeExpenseSheet = () => {
+    setShowAdd(false);
+    setEditingExpense(null);
+    setForm(EMPTY_FORM);
+  };
+
+  const openNewExpense = () => {
+    setEditingExpense(null);
+    setForm({ ...EMPTY_FORM, date: todayKey() });
+    setShowAdd(true);
+  };
+
+  const openExpenseEditor = (expense) => {
+    const meta = parseExpenseBody(expense);
+    setEditingExpense(expense);
+    setForm({
+      amount: String(meta.amount || parseAmount(expense.title) || ''),
+      merchant: meta.merchant || parseMerchant(expense.title),
+      category: meta.category || parseCategory(expense.subtitle),
+      notes: meta.notes || '',
+      recurring: meta.recurring || expense.subtitle?.match(/\[Recurring: (\w+)\]/)?.[1] || '',
+      date: meta.date || todayKey(),
+    });
+    setShowAdd(true);
+  };
+
   const addExpense = async () => {
     if (!form.amount || !form.merchant) return;
     setSaving(true);
-    // Close immediately
-    setShowAdd(false);
-    setForm({ amount: '', merchant: '', category: 'Food & Drinks', notes: '', recurring: '' });
+    const targetExpense = editingExpense;
+    closeExpenseSheet();
     const title    = `${parseFloat(form.amount).toFixed(2)} AED ${form.merchant}`;
     const recurTag = form.recurring ? ` [Recurring: ${form.recurring}]` : '';
-    const subtitle = `${form.category} • Today${recurTag}`;
+    const date = form.date || todayKey();
+    const subtitle = `${form.category} • ${expenseDateLabel(date)}${recurTag}`;
     try {
-      await fetch(`${API}/items`, {
-        method: 'POST',
+      await fetch(targetExpense ? `${API}/items/${targetExpense.id}` : `${API}/items`, {
+        method: targetExpense ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'expense', title, subtitle, workspace: workspace || 'Personal' }),
+        body: JSON.stringify({
+          type: 'expense',
+          title,
+          subtitle,
+          body: JSON.stringify({
+            amount: form.amount,
+            merchant: form.merchant,
+            category: form.category,
+            notes: form.notes,
+            recurring: form.recurring,
+            date,
+          }),
+          workspace: workspace || 'Personal',
+        }),
       });
     } catch {}
     load();
@@ -187,7 +252,7 @@ export default function ExpensePage({ loadItems, workspace }) {
         <div className="flex-1 overflow-y-auto scrollbar-hide px-5">
           {expenses.map((e) => (
             <SwipeableRow key={e.id} onDelete={() => deleteExpense(e.id, { stopPropagation: () => {} })} deleteTitle="Delete expense?" deleteItemName={e.title}>
-              <div className="flex items-center py-3 border-b border-[#1a1b23] bg-[#0b0c10]">
+              <div onClick={() => openExpenseEditor(e)} className="flex items-center py-3 border-b border-[#1a1b23] bg-[#0b0c10] cursor-pointer active:scale-[0.99] transition-transform">
                 <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg mr-4 shrink-0"
                   style={{ backgroundColor: (CAT_COLORS[parseCategory(e.subtitle)] || '#9ca3af') + '22' }}>
                   <span style={{ color: CAT_COLORS[parseCategory(e.subtitle)] }}>{CAT_ICONS[parseCategory(e.subtitle)]}</span>
@@ -211,7 +276,7 @@ export default function ExpensePage({ loadItems, workspace }) {
       )}
 
       <div className="p-5 pt-3 shrink-0">
-        <button onClick={() => setShowAdd(true)} className="w-full py-4 rounded-full bg-blue-500 hover:bg-blue-400 transition-colors font-semibold text-white flex items-center justify-center gap-2">
+        <button onClick={openNewExpense} className="w-full py-4 rounded-full bg-blue-500 hover:bg-blue-400 transition-colors font-semibold text-white flex items-center justify-center gap-2">
           + Add Expense
         </button>
         <div className="flex justify-around mt-4">
@@ -225,7 +290,7 @@ export default function ExpensePage({ loadItems, workspace }) {
 
       {/* Add Expense Modal */}
       {showAdd && (
-        <Modal title="Add Expense" onClose={() => setShowAdd(false)}>
+        <Modal title={editingExpense ? 'Edit Expense' : 'Add Expense'} onClose={closeExpenseSheet}>
           <div className="space-y-4">
             <div className="flex gap-3">
               <div className="flex-1">
@@ -238,6 +303,11 @@ export default function ExpensePage({ loadItems, workspace }) {
                 <input value={form.merchant} onChange={e => setForm(p => ({ ...p, merchant: e.target.value }))}
                   placeholder="e.g. Carrefour" className="w-full bg-[#1a1b23] border border-[#2a2b36] rounded-xl px-4 py-3 text-white outline-none focus:border-blue-500"/>
               </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 font-medium mb-1 block">Date</label>
+              <input type="date" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))}
+                className="w-full bg-[#1a1b23] border border-[#2a2b36] rounded-xl px-4 py-3 text-white outline-none focus:border-blue-500"/>
             </div>
             <div>
               <label className="text-xs text-gray-400 font-medium mb-1 block">Category</label>
@@ -261,7 +331,7 @@ export default function ExpensePage({ loadItems, workspace }) {
             </div>
             <button onClick={addExpense} disabled={saving || !form.amount || !form.merchant}
               className="w-full py-3 rounded-xl bg-blue-500 hover:bg-blue-400 disabled:opacity-40 text-white font-semibold">
-              {saving ? 'Saving…' : 'Save Expense'}
+              {saving ? 'Saving…' : editingExpense ? 'Update Expense' : 'Save Expense'}
             </button>
           </div>
         </Modal>

@@ -4,6 +4,7 @@ import SwipeableRow from '../components/SwipeableRow.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const REPEAT_OPTS = ['None', 'Daily', 'Weekly', 'Every Mon, Wed, Fri', 'Monthly'];
+const EMPTY_FORM = { title: '', date: '', time: '', repeat: 'None' };
 
 function buildCalendar(year, month) {
   const firstDay = new Date(year, month, 1).getDay();
@@ -14,10 +15,34 @@ function buildCalendar(year, month) {
   return cells;
 }
 
+function parseReminderBody(reminder) {
+  try {
+    const parsed = JSON.parse(reminder.body || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return {
+        date: parsed.date || '',
+        time: parsed.time || '',
+        repeat: parsed.repeat || 'None',
+      };
+    }
+  } catch {}
+  return { date: '', time: '', repeat: 'None' };
+}
+
+function reminderSubtitle(form) {
+  const timePart = form.time ? `, ${form.time}` : '';
+  const datePart = form.date
+    ? new Date(`${form.date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+    : 'Tomorrow';
+  const repeatPart = form.repeat !== 'None' ? form.repeat : datePart;
+  return `Reminder • ${repeatPart}${timePart}`;
+}
+
 export default function ReminderPage({ loadItems, workspace }) {
   const [reminders, setReminders] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ title: '', date: '', time: '', repeat: 'None' });
+  const [editingReminder, setEditingReminder] = useState(null);
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
   const now = new Date();
@@ -39,23 +64,47 @@ export default function ReminderPage({ loadItems, workspace }) {
 
   useEffect(() => { load(); }, [load, workspace]);
 
+  const closeReminderSheet = () => {
+    setShowAdd(false);
+    setEditingReminder(null);
+    setForm(EMPTY_FORM);
+  };
+
+  const openNewReminder = (date = '') => {
+    setEditingReminder(null);
+    setForm({ ...EMPTY_FORM, date });
+    setShowAdd(true);
+  };
+
+  const openReminderEditor = (reminder) => {
+    const meta = parseReminderBody(reminder);
+    setEditingReminder(reminder);
+    setForm({
+      title: reminder.title || '',
+      date: meta.date,
+      time: meta.time,
+      repeat: meta.repeat,
+    });
+    setShowAdd(true);
+  };
+
   const addReminder = async () => {
     if (!form.title.trim()) return;
     setSaving(true);
-    // Close immediately
-    setShowAdd(false);
-    setForm({ title: '', date: '', time: '', repeat: 'None' });
-    const timePart = form.time ? `, ${form.time}` : '';
-    const datePart = form.date
-      ? new Date(form.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
-      : 'Tomorrow';
-    const repeatPart = form.repeat !== 'None' ? form.repeat : datePart;
-    const subtitle = `Reminder • ${repeatPart}${timePart}`;
+    const targetReminder = editingReminder;
+    closeReminderSheet();
+    const subtitle = reminderSubtitle(form);
     try {
-      await fetch(`${API}/items`, {
-        method: 'POST',
+      await fetch(targetReminder ? `${API}/items/${targetReminder.id}` : `${API}/items`, {
+        method: targetReminder ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'reminder', title: form.title, subtitle, workspace: workspace || 'Personal' }),
+        body: JSON.stringify({
+          type: 'reminder',
+          title: form.title.trim(),
+          subtitle,
+          body: JSON.stringify({ date: form.date, time: form.time, repeat: form.repeat }),
+          workspace: workspace || 'Personal',
+        }),
       });
     } catch {}
     load();
@@ -90,7 +139,7 @@ export default function ReminderPage({ loadItems, workspace }) {
             {cells.map((d, i) => (
               <div key={i} className="flex items-center justify-center h-8">
                 {d && (
-                  <button onClick={() => { setSelectedDay(d); setForm(f => ({ ...f, date: `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}` })); setShowAdd(true); }}
+                  <button onClick={() => { const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`; setSelectedDay(d); openNewReminder(date); }}
                     className={`w-8 h-8 flex items-center justify-center rounded-full text-[14px] font-medium transition-colors
                     ${d === now.getDate() && month === now.getMonth() && year === now.getFullYear() ? 'bg-orange-500 text-white font-bold' :
                       selectedDay === d ? 'bg-orange-100 text-orange-600' : 'text-gray-700 hover:bg-orange-50'}`}>
@@ -112,7 +161,7 @@ export default function ReminderPage({ loadItems, workspace }) {
         )}
         {reminders.map((r) => (
           <SwipeableRow key={r.id} onDelete={() => { fetch(`${API}/items/${r.id}`, { method: 'DELETE' }).catch(()=>{}); setReminders(p => p.filter(x => x.id !== r.id)); }} deleteTitle="Delete reminder?" deleteItemName={r.title}>
-            <div className="bg-white rounded-2xl px-4 py-3 flex items-center shadow-sm mb-3">
+            <div onClick={() => openReminderEditor(r)} className="bg-white rounded-2xl px-4 py-3 flex items-center shadow-sm mb-3 cursor-pointer active:scale-[0.99] transition-transform">
               <Bell className="w-5 h-5 text-orange-400 mr-3 shrink-0"/>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-black truncate">{r.title}</p>
@@ -129,17 +178,17 @@ export default function ReminderPage({ loadItems, workspace }) {
       </div>
 
       <div className="p-6 pt-4 shrink-0">
-        <button onClick={() => setShowAdd(true)} className="w-full py-4 rounded-full bg-orange-500 hover:bg-orange-400 transition-colors font-semibold text-white flex items-center justify-center gap-2">
+        <button onClick={() => openNewReminder()} className="w-full py-4 rounded-full bg-orange-500 hover:bg-orange-400 transition-colors font-semibold text-white flex items-center justify-center gap-2">
           + Add Reminder
         </button>
       </div>
 
       {showAdd && (
-        <div className="absolute inset-0 z-50 bg-black/60 flex items-end justify-center" onClick={() => setShowAdd(false)}>
+        <div className="absolute inset-0 z-50 bg-black/60 flex items-end justify-center" onClick={closeReminderSheet}>
           <div className="bg-white rounded-t-3xl w-full max-w-[400px] p-6" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-black">Add Reminder</h3>
-              <button onClick={() => setShowAdd(false)}><X className="w-5 h-5 text-gray-400"/></button>
+              <h3 className="text-lg font-bold text-black">{editingReminder ? 'Edit Reminder' : 'Add Reminder'}</h3>
+              <button onClick={closeReminderSheet}><X className="w-5 h-5 text-gray-400"/></button>
             </div>
             <div className="space-y-3">
               <input value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))}
@@ -169,7 +218,7 @@ export default function ReminderPage({ loadItems, workspace }) {
               </div>
               <button onClick={addReminder} disabled={saving || !form.title.trim()}
                 className="w-full py-3 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-white font-semibold transition-colors">
-                {saving ? 'Saving…' : 'Save Reminder'}
+                {saving ? 'Saving…' : editingReminder ? 'Update Reminder' : 'Save Reminder'}
               </button>
             </div>
           </div>
