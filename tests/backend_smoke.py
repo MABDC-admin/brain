@@ -284,6 +284,9 @@ def test_assistant_llm_planner_keeps_email_behind_confirmation(monkeypatch):
     draft = chat("tell the planner contact about the update")
     assert draft.status_code == 200
     assert "Confirm send email to planner@example.com" in draft.json()["reply"]
+    assert draft.json()["approval"]["action"] == "send_email"
+    assert draft.json()["approval"]["token"]
+    assert draft.json()["approval"]["details"]["to"] == "planner@example.com"
     assert sent == []
 
     token = draft.json()["reply"].split("confirm ", 1)[1].split("`", 1)[0]
@@ -391,6 +394,9 @@ def test_assistant_multi_step_plan_resumes_after_email_confirmation(monkeypatch)
     )
     assert draft.status_code == 200
     assert "Created task: prepare visa packet." in draft.json()["reply"]
+    assert draft.json()["approval"]["action"] == "send_email"
+    assert draft.json()["approval"]["details"]["subject"] == "Visa packet"
+    assert draft.json()["approval"]["remaining_steps"][0]["tool"] == "create_note"
     token = draft.json()["reply"].split("confirm ", 1)[1].split("`", 1)[0]
 
     confirm = chat(f"confirm {token}")
@@ -402,3 +408,26 @@ def test_assistant_multi_step_plan_resumes_after_email_confirmation(monkeypatch)
 
     notes = client.get("/items/type/note", params={"workspace": "Personal"}).json()
     assert any(item["title"] == "visa packet sent" for item in notes)
+
+
+def test_assistant_pending_email_can_be_cancelled(monkeypatch):
+    sent = []
+
+    def fake_send(to_email, subject, body):
+        sent.append({"to": to_email, "subject": subject, "body": body})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "send_generic_email", fake_send, raising=False)
+
+    draft = chat("send email to cancel@example.com subject Stop body Do not send")
+    assert draft.status_code == 200
+    token = draft.json()["approval"]["token"]
+
+    cancelled = chat(f"cancel {token}")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["reply"] == "Canceled pending email to cancel@example.com."
+    assert sent == []
+
+    confirm = chat(f"confirm {token}")
+    assert confirm.status_code == 200
+    assert "could not find a pending email" in confirm.json()["reply"]

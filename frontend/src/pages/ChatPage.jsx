@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, X, Sparkles, Zap, RotateCcw } from 'lucide-react';
+import { Send, X, Sparkles, Zap, RotateCcw, ShieldCheck, Ban } from 'lucide-react';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 
@@ -19,6 +19,48 @@ function TypingDots() {
         <div key={i} className="w-2 h-2 bg-gray-500 rounded-full"
           style={{ animation: `bounce 1.2s ${i * 0.15}s ease-in-out infinite` }}/>
       ))}
+    </div>
+  );
+}
+
+function ApprovalCard({ approval, onAction, disabled }) {
+  if (!approval) return null;
+  const details = approval.details || {};
+  const remaining = approval.remaining_steps || [];
+
+  return (
+    <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-left">
+      <div className="flex items-center gap-2 text-amber-200 text-[12px] font-semibold uppercase tracking-wide">
+        <ShieldCheck className="w-4 h-4"/>
+        Approval required
+      </div>
+      <div className="mt-2 space-y-1 text-[13px] text-gray-100">
+        <div><span className="text-gray-400">Action:</span> {approval.action?.replaceAll('_', ' ')}</div>
+        {details.to && <div><span className="text-gray-400">To:</span> {details.to}</div>}
+        {details.subject && <div><span className="text-gray-400">Subject:</span> {details.subject}</div>}
+        {details.body && <div className="max-h-24 overflow-y-auto rounded-lg bg-black/20 px-2 py-1 text-gray-200">{details.body}</div>}
+        {remaining.length > 0 && (
+          <div className="pt-1 text-gray-300">
+            Then: {remaining.map(step => step.tool?.replaceAll('_', ' ')).filter(Boolean).join(', ')}
+          </div>
+        )}
+      </div>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={() => onAction(approval.confirm_command)}
+          disabled={disabled}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-[12px] font-semibold text-white hover:bg-emerald-400 disabled:opacity-50"
+        >
+          <ShieldCheck className="w-3.5 h-3.5"/> Confirm
+        </button>
+        <button
+          onClick={() => onAction(approval.cancel_command)}
+          disabled={disabled}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-[#242631] px-3 py-2 text-[12px] font-semibold text-gray-200 hover:bg-[#303342] disabled:opacity-50"
+        >
+          <Ban className="w-3.5 h-3.5"/> Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -58,7 +100,7 @@ export default function ChatPage() {
         }),
       });
       const data = await res.json();
-      setMessages(h => [...h, { role: 'assistant', content: data.reply }]);
+      setMessages(h => [...h, { role: 'assistant', content: data.reply, approval: data.approval }]);
     } catch {
       setError('Could not reach AI — is the backend running?');
     }
@@ -102,6 +144,9 @@ export default function ChatPage() {
                 ? 'bg-indigo-500 text-white rounded-tr-sm'
                 : 'bg-[#14151b] text-gray-100 border border-[#2a2b36] rounded-tl-sm'}`}>
               {m.content}
+              {m.role === 'assistant' && (
+                <ApprovalCard approval={m.approval} onAction={send} disabled={loading}/>
+              )}
             </div>
           </div>
         ))}

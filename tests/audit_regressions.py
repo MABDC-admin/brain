@@ -190,6 +190,19 @@ def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
     assert "For multiple actions, use steps" in main
     assert "remaining_steps" in main
     assert 'execute_assistant_plan({"steps": remaining_steps}' in main
+    assert "approval_payload" in main
+    assert "cancellation_token_from_message" in main
+    assert 'status = "canceled"' in main
+
+
+def test_chat_page_renders_structured_approval_controls() -> None:
+    chat = read("frontend/src/pages/ChatPage.jsx")
+    assert "ApprovalCard" in chat
+    assert "m.approval" in chat
+    assert "confirm_command" in chat
+    assert "cancel_command" in chat
+    assert "remaining_steps" in chat
+    assert "ShieldCheck" in chat
 
 
 def test_task_page_supports_editing_existing_tasks() -> None:

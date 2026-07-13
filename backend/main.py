@@ -580,7 +580,11 @@ def execute_assistant_tool(
             payload={"to": to_email, "subject": subject, "body": body, "source": source, "remaining_steps": remaining_steps or []},
             confirmation_token=token,
         )
-        return {"reply": f"Confirm send email to {to_email} with subject \"{subject}\"? Reply `confirm {token}` to send."}
+        details = {"to": to_email, "subject": subject, "body": body}
+        return {
+            "reply": f"Confirm send email to {to_email} with subject \"{subject}\"? Reply `confirm {token}` to send.",
+            "approval": approval_payload(tool_name, token, details, remaining_steps),
+        }
 
     if tool_name == "send_vault_document_email":
         to_email = str(arguments.get("to") or "").strip()
@@ -630,8 +634,12 @@ def execute_assistant_plan(planned_tool: dict, request_text: str, db: Session) -
         reply = result.get("reply", "")
         if reply:
             replies.append(reply)
+        approval = result.get("approval")
         if assistant_reply_requires_confirmation(reply):
-            break
+            response = {"reply": "\n".join(replies)}
+            if approval:
+                response["approval"] = approval
+            return response
     if not replies:
         return None
     return {"reply": "\n".join(replies)}
@@ -800,8 +808,26 @@ def confirmation_token_from_message(message: str) -> str:
     return match.group(1) if match else ""
 
 
+def cancellation_token_from_message(message: str) -> str:
+    match = re.search(r"\bcancel\s+([A-Za-z0-9_-]{6,})\b", message or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
 def is_confirmation_message(message: str) -> bool:
-    return bool(confirmation_token_from_message(message))
+    return bool(confirmation_token_from_message(message) or cancellation_token_from_message(message))
+
+
+def approval_payload(action: str, token: str, details: dict, remaining_steps: list | None = None) -> dict:
+    safe_details = {key: value for key, value in (details or {}).items() if key != "security_phrase"}
+    return {
+        "action": action,
+        "token": token,
+        "risk_level": ASSISTANT_TOOL_RISK.get(action, 0),
+        "details": safe_details,
+        "remaining_steps": remaining_steps or [],
+        "confirm_command": f"confirm {token}",
+        "cancel_command": f"cancel {token}",
+    }
 
 
 def looks_like_compound_action_request(message: str) -> bool:
@@ -818,6 +844,25 @@ def looks_like_compound_action_request(message: str) -> bool:
 
 
 def handle_generic_email_request(message: str, history: list, db: Session) -> Optional[dict]:
+    cancel_token = cancellation_token_from_message(message)
+    if cancel_token:
+        pending = (
+            db.query(models.AssistantAudit)
+            .filter(
+                models.AssistantAudit.action == "send_email",
+                models.AssistantAudit.status == "pending",
+                models.AssistantAudit.confirmation_token == cancel_token,
+            )
+            .first()
+        )
+        if not pending:
+            return {"reply": "I could not find a pending email for that cancellation token."}
+        payload = json.loads(pending.payload or "{}")
+        pending.status = "canceled"
+        pending.summary = f"Canceled email to {payload.get('to', 'recipient')}"
+        db.commit()
+        return {"reply": f"Canceled pending email to {payload.get('to', 'recipient')}."}
+
     token = confirmation_token_from_message(message)
     if token:
         pending = (
@@ -868,7 +913,8 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
         "reply": (
             f"Confirm send email to {parsed['to']} with subject \"{parsed['subject']}\"? "
             f"Reply `confirm {token}` to send."
-        )
+        ),
+        "approval": approval_payload("send_email", token, parsed),
     }
 
 
