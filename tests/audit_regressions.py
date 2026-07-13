@@ -121,6 +121,26 @@ def test_phase_three_vault_intelligence_is_registered() -> None:
     assert "/shared/${data.share_token}" in vault
 
 
+def test_phase_four_bulk_vault_tools_are_registered() -> None:
+    backend = read("backend/main.py")
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    assert "VaultBulkRequest" in backend
+    assert '@app.post("/api/vault/bulk/export")' in backend
+    assert '@app.post("/api/vault/bulk/delete")' in backend
+    assert '@app.post("/api/vault/bulk/email")' in backend
+    assert '@app.post("/api/vault/bulk/ocr")' in backend
+    assert "bulk_export_vault_documents" in backend
+    assert "bulk_delete_vault_documents" in backend
+    assert "bulk_email_vault_documents" in backend
+    assert "bulk_ocr_vault_documents" in backend
+    assert "selectedIds" in vault
+    assert "Select visible" in vault
+    assert "/api/vault/bulk/ocr" in vault
+    assert "/api/vault/bulk/email" in vault
+    assert "/api/vault/bulk/export" in vault
+    assert "/api/vault/bulk/delete" in vault
+
+
 def test_frontend_has_no_development_console_log() -> None:
     assert_absent("frontend/src/main.jsx", "console.log")
 

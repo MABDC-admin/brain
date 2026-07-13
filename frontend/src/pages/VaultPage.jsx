@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { CalendarClock, Check, ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, Pencil, UploadCloud, UserRound, X, Zap, Mic, Share } from 'lucide-react';
+import { CalendarClock, Check, CheckSquare, Download, ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, Mail, Pencil, RefreshCw, Square, Trash2, UploadCloud, UserRound, X, Zap, Mic, Share } from 'lucide-react';
 import { useHaptic } from '../hooks/useHaptic.js';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
@@ -55,6 +55,8 @@ export default function VaultPage({ workspace }) {
   const [savingReview, setSavingReview] = useState(false);
   const [filterOwner, setFilterOwner] = useState('All');
   const [filterCategory, setFilterCategory] = useState('All');
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState('');
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, failed: [] });
   const fileInputRef = useRef(null);
   const haptic = useHaptic();
@@ -86,6 +88,9 @@ export default function VaultPage({ workspace }) {
     const categoryOk = filterCategory === 'All' || file._meta.category === filterCategory;
     return ownerOk && categoryOk;
   });
+  const selectedCount = selectedIds.length;
+  const filteredIds = filteredFiles.map(file => file.id);
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
 
   const toggleMic = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -226,6 +231,14 @@ export default function VaultPage({ workspace }) {
     }
   };
 
+  const toggleSelected = (id) => {
+    setSelectedIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id]);
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds(current => allFilteredSelected ? current.filter(id => !filteredIds.includes(id)) : Array.from(new Set([...current, ...filteredIds])));
+  };
+
   const beginReview = (file) => {
     const meta = vaultMeta(file);
     setReviewFile(file);
@@ -260,6 +273,99 @@ export default function VaultPage({ workspace }) {
       alert('Could not save OCR review.');
     } finally {
       setSavingReview(false);
+    }
+  };
+
+  const bulkOcr = async () => {
+    if (!selectedCount) return;
+    setBulkBusy('OCR');
+    try {
+      const response = await fetch(`${API}/api/vault/bulk/ocr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      if (!response.ok) throw new Error('Bulk OCR failed');
+      await load();
+      haptic.success();
+    } catch {
+      haptic.error();
+      alert('Bulk OCR failed.');
+    } finally {
+      setBulkBusy('');
+    }
+  };
+
+  const bulkDelete = async () => {
+    if (!selectedCount) return;
+    const phrase = window.prompt(`Type the security phrase to delete ${selectedCount} selected document${selectedCount === 1 ? '' : 's'}.`);
+    if (!phrase) return;
+    setBulkBusy('Delete');
+    try {
+      const response = await fetch(`${API}/api/vault/bulk/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedIds, phrase }),
+      });
+      if (!response.ok) throw new Error('Bulk delete failed');
+      setFiles(current => current.filter(file => !selectedIds.includes(file.id)));
+      setSelectedIds([]);
+      haptic.success();
+    } catch {
+      haptic.error();
+      alert('Bulk delete failed. Check the security phrase.');
+    } finally {
+      setBulkBusy('');
+    }
+  };
+
+  const bulkEmail = async () => {
+    if (!selectedCount) return;
+    const to = window.prompt('Send selected vault documents to which email?');
+    if (!to) return;
+    setBulkBusy('Email');
+    try {
+      const response = await fetch(`${API}/api/vault/bulk/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedIds, to }),
+      });
+      if (!response.ok) throw new Error('Bulk email failed');
+      const result = await response.json();
+      haptic.success();
+      alert(`Sent ${result.sent_count || 0} of ${selectedCount} selected document${selectedCount === 1 ? '' : 's'}.`);
+    } catch {
+      haptic.error();
+      alert('Bulk email failed.');
+    } finally {
+      setBulkBusy('');
+    }
+  };
+
+  const bulkExport = async () => {
+    if (!selectedCount) return;
+    setBulkBusy('Export');
+    try {
+      const response = await fetch(`${API}/api/vault/bulk/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      if (!response.ok) throw new Error('Bulk export failed');
+      const data = await response.json();
+      const blob = new Blob([JSON.stringify(data.documents || [], null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `vault-export-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      haptic.success();
+    } catch {
+      haptic.error();
+      alert('Bulk export failed.');
+    } finally {
+      setBulkBusy('');
     }
   };
 
@@ -423,6 +529,32 @@ export default function VaultPage({ workspace }) {
             {categories.map(category => <option key={category} value={category}>{category === 'All' ? 'All categories' : category}</option>)}
           </select>
         </div>
+
+        <div className="mt-3 flex items-center justify-between rounded-2xl border border-[#2a2b36] bg-[#14151b] px-3 py-2">
+          <button onClick={toggleSelectAll} disabled={!filteredFiles.length}
+            className="flex items-center gap-2 text-xs font-bold text-gray-300 disabled:opacity-40">
+            {allFilteredSelected ? <CheckSquare className="w-4 h-4 text-indigo-300"/> : <Square className="w-4 h-4"/>}
+            {allFilteredSelected ? 'Clear visible' : 'Select visible'}
+          </button>
+          <span className="text-[11px] font-bold uppercase text-gray-500">{selectedCount} selected</span>
+        </div>
+
+        {selectedCount > 0 && (
+          <div className="mt-3 grid grid-cols-4 gap-2 rounded-2xl border border-indigo-500/20 bg-indigo-500/10 p-2">
+            <button onClick={bulkOcr} disabled={!!bulkBusy} className="flex flex-col items-center gap-1 rounded-xl bg-[#0b0c10] py-2 text-[10px] font-bold text-indigo-200 disabled:opacity-50">
+              <RefreshCw className={`w-4 h-4 ${bulkBusy === 'OCR' ? 'animate-spin' : ''}`}/> OCR
+            </button>
+            <button onClick={bulkEmail} disabled={!!bulkBusy} className="flex flex-col items-center gap-1 rounded-xl bg-[#0b0c10] py-2 text-[10px] font-bold text-emerald-200 disabled:opacity-50">
+              <Mail className="w-4 h-4"/> Email
+            </button>
+            <button onClick={bulkExport} disabled={!!bulkBusy} className="flex flex-col items-center gap-1 rounded-xl bg-[#0b0c10] py-2 text-[10px] font-bold text-blue-200 disabled:opacity-50">
+              <Download className="w-4 h-4"/> Export
+            </button>
+            <button onClick={bulkDelete} disabled={!!bulkBusy} className="flex flex-col items-center gap-1 rounded-xl bg-[#0b0c10] py-2 text-[10px] font-bold text-red-200 disabled:opacity-50">
+              <Trash2 className="w-4 h-4"/> Delete
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto scrollbar-hide px-6 pb-24">
@@ -453,6 +585,11 @@ export default function VaultPage({ workspace }) {
               >
                 <div className="bg-[#14151b] border border-[#2a2b36] rounded-2xl p-4 flex items-center gap-4 group cursor-pointer"
                   onClick={() => openPreview(f)}>
+                  <button onClick={(event) => { event.stopPropagation(); toggleSelected(f.id); }}
+                    className="shrink-0 text-gray-500 hover:text-indigo-300"
+                    aria-label={`${selectedIds.includes(f.id) ? 'Deselect' : 'Select'} ${f.title}`}>
+                    {selectedIds.includes(f.id) ? <CheckSquare className="w-5 h-5 text-indigo-300"/> : <Square className="w-5 h-5"/>}
+                  </button>
                   <div className="w-12 h-12 rounded-xl bg-[#0b0c10] border border-[#2a2b36] flex items-center justify-center shrink-0">
                     <FileIcon name={f.title} />
                   </div>

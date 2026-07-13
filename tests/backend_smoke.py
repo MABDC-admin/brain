@@ -773,6 +773,77 @@ def test_vault_review_updates_metadata_and_search_index():
     assert "Passport holder Dennis reviewed" in body["index_text"]
 
 
+def create_vault_item(title: str, body: dict | None = None) -> dict:
+    response = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": title,
+            "subtitle": "Document",
+            "workspace": "Personal",
+            "image_url": f"https://brain.mabdc.com/static/{title}",
+            "body": json.dumps(body or {"category": "Document", "owner": "Dennis", "full_text": title}),
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_bulk_vault_export_email_and_delete(monkeypatch):
+    sent = []
+
+    def fake_send(to_email, item):
+        sent.append({"to": to_email, "title": item.title, "share_token": item.share_token})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "send_document_email", fake_send, raising=False)
+    first = create_vault_item("Bulk One.pdf", {"category": "Passport", "owner": "Dennis", "expiry_date": "2030-01-01", "summary": "One", "full_text": "One"})
+    second = create_vault_item("Bulk Two.pdf", {"category": "Visa", "owner": "Gema", "expiry_date": "2031-01-01", "summary": "Two", "full_text": "Two"})
+
+    export = client.post("/api/vault/bulk/export", json={"ids": [first["id"], second["id"]]})
+    assert export.status_code == 200
+    rows = export.json()["documents"]
+    assert [row["title"] for row in rows] == ["Bulk One.pdf", "Bulk Two.pdf"]
+    assert rows[0]["owner"] == "Dennis"
+    assert rows[1]["category"] == "Visa"
+
+    email = client.post("/api/vault/bulk/email", json={"ids": [first["id"], second["id"]], "to": "bulk@example.com"})
+    assert email.status_code == 200
+    assert email.json()["sent_count"] == 2
+    assert [row["title"] for row in sent] == ["Bulk One.pdf", "Bulk Two.pdf"]
+    assert all(row["share_token"] for row in sent)
+
+    denied = client.post("/api/vault/bulk/delete", json={"ids": [first["id"]], "phrase": "wrong"})
+    assert denied.status_code == 403
+
+    deleted = client.post("/api/vault/bulk/delete", json={"ids": [first["id"], second["id"]], "phrase": "smoke-delete-phrase"})
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_count"] == 2
+
+
+def test_bulk_vault_ocr_runs_selected_documents(monkeypatch):
+    called = []
+    first = create_vault_item("Bulk OCR One.pdf")
+    second = create_vault_item("Bulk OCR Two.pdf")
+
+    async def fake_retry(doc, db, request_text=""):
+        called.append(doc.title)
+        body = main.parse_item_body(doc)
+        body["scan_status"] = "success"
+        body["full_text"] = f"OCR {doc.title}"
+        doc.body = main.dump_item_body(body)
+        db.commit()
+        return {"reply": f"OCR updated {doc.title}"}
+
+    monkeypatch.setattr(main, "retry_vault_document_ocr", fake_retry, raising=False)
+
+    response = client.post("/api/vault/bulk/ocr", json={"ids": [first["id"], second["id"]]})
+
+    assert response.status_code == 200
+    assert response.json()["processed_count"] == 2
+    assert called == ["Bulk OCR One.pdf", "Bulk OCR Two.pdf"]
+
+
 def test_due_reminder_notifications_are_sent_once_per_day(monkeypatch):
     sent = []
 

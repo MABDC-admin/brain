@@ -98,6 +98,18 @@ class VaultMetadataUpdate(BaseModel):
     full_text: str = ""
 
 
+class VaultBulkRequest(BaseModel):
+    ids: list[int]
+
+
+class VaultBulkDeleteRequest(VaultBulkRequest):
+    phrase: str = ""
+
+
+class VaultBulkEmailRequest(VaultBulkRequest):
+    to: str
+
+
 def model_data(model: BaseModel, *, exclude_unset: bool = False) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=exclude_unset)
@@ -1048,6 +1060,41 @@ def delete_vault_document(item: models.Item, db: Session) -> None:
             logger.warning("Could not remove vault upload file: %s", upload_path)
 
 
+def selected_vault_documents(ids: list[int], db: Session) -> list[models.Item]:
+    clean_ids = []
+    for item_id in ids or []:
+        if isinstance(item_id, int) and item_id not in clean_ids:
+            clean_ids.append(item_id)
+    if not clean_ids:
+        return []
+    rows = db.query(models.Item).filter(models.Item.type == "vault_file", models.Item.id.in_(clean_ids)).all()
+    by_id = {row.id: row for row in rows}
+    return [by_id[item_id] for item_id in clean_ids if item_id in by_id]
+
+
+def vault_export_row(item: models.Item) -> dict:
+    body = parse_item_body(item)
+    return {
+        "id": item.id,
+        "title": item.title,
+        "category": body.get("category") or (item.subtitle or "").split("•", 1)[0].strip() or "Document",
+        "owner": body.get("owner") or item.tags or "",
+        "expiry_date": body.get("expiry_date") or item.expiry_date or "",
+        "summary": body.get("summary") or "",
+        "scan_status": body.get("scan_status") or "",
+        "workspace": item.workspace,
+    }
+
+
+def ensure_share_token(item: models.Item, db: Session) -> str:
+    if not item.share_token or (item.share_expires_at and item.share_expires_at < datetime.utcnow()):
+        item.share_token = secrets.token_urlsafe(32)
+        item.share_expires_at = datetime.utcnow() + timedelta(hours=24)
+        db.commit()
+        db.refresh(item)
+    return item.share_token
+
+
 @app.delete("/api/vault/{item_id}")
 def delete_vault_item(
     item_id: int,
@@ -1066,6 +1113,97 @@ def delete_vault_item(
     delete_vault_document(item, db)
     audit_action(db, action="delete_vault_document", risk_level=3, status="completed", target_type="vault_file", target_id=item_id, summary=f"Deleted {item_title}", request_text="DELETE /api/vault")
     return {"ok": True}
+
+
+@app.post("/api/vault/bulk/export")
+def bulk_export_vault_documents(payload: VaultBulkRequest, db: Session = Depends(get_db)):
+    docs = selected_vault_documents(payload.ids, db)
+    rows = [vault_export_row(doc) for doc in docs]
+    audit_action(
+        db,
+        action="bulk_export_vault_documents",
+        risk_level=1,
+        status="completed",
+        target_type="vault_file",
+        summary=f"Exported metadata for {len(rows)} vault documents",
+        request_text="POST /api/vault/bulk/export",
+        payload={"ids": [doc.id for doc in docs], "count": len(rows)},
+    )
+    return {"documents": rows, "count": len(rows)}
+
+
+@app.post("/api/vault/bulk/delete")
+def bulk_delete_vault_documents(payload: VaultBulkDeleteRequest, db: Session = Depends(get_db)):
+    if not VAULT_DELETE_PHRASE:
+        raise HTTPException(status_code=500, detail="Vault delete phrase is not configured")
+    if not secrets.compare_digest((payload.phrase or "").strip(), VAULT_DELETE_PHRASE):
+        raise HTTPException(status_code=403, detail="Security phrase is required")
+    docs = selected_vault_documents(payload.ids, db)
+    deleted = []
+    for doc in docs:
+        deleted.append({"id": doc.id, "title": doc.title})
+        delete_vault_document(doc, db)
+    audit_action(
+        db,
+        action="bulk_delete_vault_documents",
+        risk_level=3,
+        status="completed",
+        target_type="vault_file",
+        summary=f"Deleted {len(deleted)} vault documents",
+        request_text="POST /api/vault/bulk/delete",
+        payload={"deleted": deleted},
+    )
+    return {"ok": True, "deleted_count": len(deleted), "deleted": deleted}
+
+
+@app.post("/api/vault/bulk/email")
+def bulk_email_vault_documents(payload: VaultBulkEmailRequest, db: Session = Depends(get_db)):
+    if not EMAIL_RE.fullmatch(payload.to or ""):
+        raise HTTPException(status_code=400, detail="Valid recipient email is required")
+    docs = selected_vault_documents(payload.ids, db)
+    results = []
+    for doc in docs:
+        ensure_share_token(doc, db)
+        ok, detail = send_document_email(payload.to, doc)
+        results.append({"id": doc.id, "title": doc.title, "ok": ok, "detail": detail, "share_token": doc.share_token})
+    sent_count = sum(1 for row in results if row["ok"])
+    audit_action(
+        db,
+        action="bulk_email_vault_documents",
+        risk_level=3,
+        status="completed" if sent_count == len(results) else "failed",
+        target_type="vault_file",
+        summary=f"Sent {sent_count}/{len(results)} vault documents to {payload.to}",
+        request_text="POST /api/vault/bulk/email",
+        payload={"to": payload.to, "results": results},
+    )
+    return {"ok": sent_count == len(results), "sent_count": sent_count, "results": results}
+
+
+@app.post("/api/vault/bulk/ocr")
+async def bulk_ocr_vault_documents(payload: VaultBulkRequest, db: Session = Depends(get_db)):
+    docs = selected_vault_documents(payload.ids, db)
+    results = []
+    for doc in docs:
+        try:
+            result = await retry_vault_document_ocr(doc, db, request_text="bulk OCR selected vault documents")
+            db.refresh(doc)
+            results.append({"id": doc.id, "title": doc.title, "ok": True, "reply": result.get("reply", "")})
+        except Exception as exc:
+            db.rollback()
+            results.append({"id": doc.id, "title": doc.title, "ok": False, "reply": str(exc)})
+    processed_count = sum(1 for row in results if row["ok"])
+    audit_action(
+        db,
+        action="bulk_ocr_vault_documents",
+        risk_level=2,
+        status="completed" if processed_count == len(results) else "failed",
+        target_type="vault_file",
+        summary=f"OCR processed {processed_count}/{len(results)} vault documents",
+        request_text="POST /api/vault/bulk/ocr",
+        payload={"ids": [doc.id for doc in docs], "results": results},
+    )
+    return {"ok": processed_count == len(results), "processed_count": processed_count, "results": results}
 
 
 @app.patch("/api/vault/{item_id}/metadata", response_model=schemas.Item)
@@ -1120,7 +1258,8 @@ def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
         return False, "That document does not have a file link yet."
 
     safe_title = html.escape(item.title or "Vault document")
-    safe_url = html.escape(item.image_url)
+    document_url = f"{PUBLIC_BASE_URL}/shared/{item.share_token}" if item.share_token else item.image_url
+    safe_url = html.escape(document_url)
     payload = {
         "to": to_email,
         "from": "vault-ai@mabdc.org",
