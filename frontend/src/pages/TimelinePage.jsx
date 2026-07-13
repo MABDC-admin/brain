@@ -10,7 +10,7 @@ export default function TimelinePage({ workspace }) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetch(`${API}/items?workspace=${workspace}`)
+    fetch(`${API}/items?workspace=${encodeURIComponent(workspace || 'Personal')}`)
       .then(r => r.json())
       .then(data => {
         // Sort items by created_at ascending to show a true chronological timeline

@@ -22,7 +22,7 @@ export default function VaultPage({ workspace }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch(`${API}/items/type/vault_file?workspace=${workspace || 'Personal'}`)
+    fetch(`${API}/items/type/vault_file?workspace=${encodeURIComponent(workspace || 'Personal')}`)
       .then(r => r.json())
       .then(data => setFiles(data))
       .catch(() => setFiles([]))
@@ -30,6 +30,7 @@ export default function VaultPage({ workspace }) {
   }, [workspace]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { setTargetWorkspace(workspace || 'Personal'); }, [workspace]);
 
   const toggleMic = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;

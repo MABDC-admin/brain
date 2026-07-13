@@ -73,7 +73,7 @@ export default function NotePage({ loadItems, workspace }) {
   const [searchQuery,  setSearchQuery] = useState('');
 
   const load = useCallback(() => {
-    fetch(`${API}/items/type/note?workspace=${workspace || 'Personal'}`)
+    fetch(`${API}/items/type/note?workspace=${encodeURIComponent(workspace || 'Personal')}`)
       .then(r => r.json())
       .then(data => setNotes(data))
       .catch(() => setNotes([]));

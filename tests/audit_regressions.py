@@ -191,6 +191,29 @@ def test_mobile_layout_removes_desktop_phone_frame() -> None:
     assert "box-shadow: none;" in css
 
 
+def test_workspace_selector_is_clickable_on_touch_devices() -> None:
+    layout = read("frontend/src/Layout.jsx")
+    assert "workspaceOpen" in layout
+    assert "setWorkspaceOpen" in layout
+    assert "aria-expanded={workspaceOpen}" in layout
+    assert "setWorkspaceOpen(false)" in layout
+    assert "group-hover:opacity-100" not in layout
+
+
+def test_workspace_queries_are_url_encoded() -> None:
+    encoded_pages = {
+        "frontend/src/App.jsx": "/items?workspace=${encodeURIComponent(workspace)}",
+        "frontend/src/pages/TaskPage.jsx": "/items/type/task?workspace=${encodeURIComponent(",
+        "frontend/src/pages/NotePage.jsx": "/items/type/note?workspace=${encodeURIComponent(",
+        "frontend/src/pages/ReminderPage.jsx": "/items/type/reminder?workspace=${encodeURIComponent(",
+        "frontend/src/pages/ExpensePage.jsx": "/items/type/expense?workspace=${encodeURIComponent(",
+        "frontend/src/pages/TimelinePage.jsx": "/items?workspace=${encodeURIComponent(",
+        "frontend/src/pages/VaultPage.jsx": "/items/type/vault_file?workspace=${encodeURIComponent(",
+    }
+    for path, needle in encoded_pages.items():
+        assert needle in read(path)
+
+
 if __name__ == "__main__":
     tests = [
         test_no_hardcoded_localhost_api_urls,
@@ -213,6 +236,8 @@ if __name__ == "__main__":
         test_backend_smoke_uses_isolated_database,
         test_task_page_supports_editing_existing_tasks,
         test_mobile_layout_removes_desktop_phone_frame,
+        test_workspace_selector_is_clickable_on_touch_devices,
+        test_workspace_queries_are_url_encoded,
     ]
 
     failures = []

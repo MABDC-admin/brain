@@ -36,7 +36,7 @@ export default function ExpensePage({ loadItems, workspace }) {
   const [saving,     setSaving]     = useState(false);
 
   const load = useCallback(() => {
-    fetch(`${API}/items/type/expense?workspace=${workspace || 'Personal'}`)
+    fetch(`${API}/items/type/expense?workspace=${encodeURIComponent(workspace || 'Personal')}`)
       .then(r => r.json())
       .then(setExpenses)
       .catch(() => setExpenses([]));

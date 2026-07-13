@@ -49,7 +49,7 @@ export default function TaskPage({ loadItems, workspace }) {
   const haptic = useHaptic();
 
   const load = useCallback(() => {
-    fetch(`${API}/items/type/task?workspace=${workspace || 'Personal'}`)
+    fetch(`${API}/items/type/task?workspace=${encodeURIComponent(workspace || 'Personal')}`)
       .then(r => r.json())
       .then(data => setTasks(data))
       .catch(() => setTasks([]));

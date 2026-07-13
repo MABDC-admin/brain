@@ -17,6 +17,7 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
   const path        = location.pathname;
   const [fabOpen,   setFabOpen]   = useState(false);
   const [preview,   setPreview]   = useState(null);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const navItems = [
     { icon: Home,     label: 'Home',     to: '/',        badge: null },
     { icon: Search,   label: 'Search',   to: '/search',  badge: null },
@@ -45,14 +46,19 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
             <span className="text-gray-400 text-xs">{(new Date()).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
           </div>
           
-          <div className="relative group z-50">
-            <button className="flex items-center gap-1.5 bg-[#1a1b23] hover:bg-[#2a2b36] border border-[#2a2b36] px-3 py-1 rounded-full text-xs transition-colors">
+          <div className="relative z-50">
+            <button
+              type="button"
+              onClick={() => setWorkspaceOpen(open => !open)}
+              aria-expanded={workspaceOpen}
+              className="flex items-center gap-1.5 bg-[#1a1b23] hover:bg-[#2a2b36] border border-[#2a2b36] px-3 py-1 rounded-full text-xs transition-colors"
+            >
               <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
               <span className="text-white">{workspace || 'Personal'}</span>
             </button>
-            <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-48 bg-[#1a1b23] border border-[#2a2b36] rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all flex flex-col overflow-hidden">
+            <div className={`absolute top-full mt-2 left-1/2 -translate-x-1/2 w-48 bg-[#1a1b23] border border-[#2a2b36] rounded-xl shadow-2xl transition-all flex flex-col overflow-hidden ${workspaceOpen ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-1'}`}>
               {['Personal', 'Company', 'Employee Docs', 'Family', 'Archive'].map(ws => (
-                <button key={ws} onClick={() => setWorkspace(ws)}
+                <button key={ws} onClick={() => { setWorkspace(ws); setWorkspaceOpen(false); }}
                   className={`px-4 py-2.5 text-xs text-left hover:bg-[#2a2b36] transition-colors ${workspace === ws ? 'text-indigo-400 font-bold bg-[#2a2b36]' : 'text-gray-300'}`}>
                   {ws}
                 </button>
