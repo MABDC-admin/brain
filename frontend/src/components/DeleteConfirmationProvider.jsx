@@ -5,9 +5,13 @@ import { DeleteConfirmationContext } from '../hooks/useDeleteConfirmation.js';
 export function DeleteConfirmationProvider({ children }) {
   const [request, setRequest] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [phraseInput, setPhraseInput] = useState('');
 
   const close = useCallback(() => {
-    if (!busy) setRequest(null);
+    if (!busy) {
+      setRequest(null);
+      setPhraseInput('');
+    }
   }, [busy]);
 
   const confirmDelete = useCallback((nextRequest) => {
@@ -16,8 +20,10 @@ export function DeleteConfirmationProvider({ children }) {
       itemName: '',
       message: 'This action cannot be undone.',
       confirmLabel: 'Delete',
+      requiredPhrase: '',
       ...nextRequest,
     });
+    setPhraseInput('');
   }, []);
 
   const handleConfirm = async () => {
@@ -26,12 +32,14 @@ export function DeleteConfirmationProvider({ children }) {
     try {
       await request.onConfirm();
       setRequest(null);
+      setPhraseInput('');
     } finally {
       setBusy(false);
     }
   };
 
   const value = useMemo(() => ({ confirmDelete }), [confirmDelete]);
+  const phraseMatches = !request?.requiredPhrase || phraseInput.trim() === request.requiredPhrase;
 
   return (
     <DeleteConfirmationContext.Provider value={value}>
@@ -54,11 +62,31 @@ export function DeleteConfirmationProvider({ children }) {
                 <X className="h-5 w-5" />
               </button>
             </div>
+            {request.requiredPhrase && (
+              <div className="border-b border-[#242631] px-4 py-4">
+                <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-red-200">
+                  Security phrase
+                </label>
+                <input
+                  value={phraseInput}
+                  onChange={(e) => setPhraseInput(e.target.value)}
+                  autoFocus
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  spellCheck="false"
+                  placeholder={`Type ${request.requiredPhrase}`}
+                  className="w-full rounded-2xl border border-red-500/30 bg-[#0b0c10] px-4 py-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-gray-600 focus:border-red-400"
+                />
+                <p className="mt-2 text-xs text-gray-500">
+                  Type the exact phrase to unlock this delete action.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3 p-4">
               <button type="button" onClick={close} disabled={busy} className="rounded-2xl border border-[#2a2b36] bg-[#181a22] px-4 py-3 text-sm font-bold text-gray-200 transition-colors hover:bg-[#20232d] disabled:opacity-50">
                 Cancel
               </button>
-              <button type="button" onClick={handleConfirm} disabled={busy} className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-red-950/30 transition-colors hover:bg-red-400 disabled:opacity-60">
+              <button type="button" onClick={handleConfirm} disabled={busy || !phraseMatches} className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-red-950/30 transition-colors hover:bg-red-400 disabled:opacity-60">
                 <Trash2 className="h-4 w-4" />
                 {busy ? 'Deleting...' : request.confirmLabel}
               </button>

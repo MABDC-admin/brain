@@ -270,6 +270,35 @@ def test_vault_supports_bulk_sequential_uploads() -> None:
     assert "Uploading ${uploadProgress.current} of ${uploadProgress.total}" in vault
 
 
+def test_vault_deletion_requires_security_phrase() -> None:
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    dialog = read("frontend/src/components/DeleteConfirmationProvider.jsx")
+    swipe = read("frontend/src/components/SwipeableRow.jsx")
+    backend = read("backend/main.py")
+    assert 'requiredPhrase: "banana"' in vault
+    assert "/api/vault/" in vault
+    assert "requiredPhrase" in dialog
+    assert "phraseInput" in dialog
+    assert "deleteRequiredPhrase" in swipe
+    assert "VAULT_DELETE_PHRASE" in backend
+    assert '@app.delete("/api/vault/{item_id}")' in backend
+
+
+def test_chat_can_delete_vault_documents_after_phrase() -> None:
+    backend = read("backend/main.py")
+    assert "handle_document_delete_request" in backend
+    assert "DELETE_WORD_RE" in backend
+    assert "has_security_phrase" in backend
+    assert "is_exact_security_phrase" in backend
+    assert "pending_delete_title" in backend
+    assert "find_vault_document_by_title" in backend
+    assert "delete_vault_document" in backend
+    assert "delete_intent = handle_document_delete_request" in backend
+    assert "security phrase" in backend
+    assert "if current_delete_request:" in backend
+    assert "return ask_for_vault_delete_phrase" in backend
+
+
 def test_chat_can_send_vault_documents_by_email() -> None:
     backend = read("backend/main.py")
     assert 'EMAIL_RE = re.compile(r"\\b' in backend
@@ -311,6 +340,8 @@ if __name__ == "__main__":
         test_core_command_pages_support_editing_and_dates,
         test_vault_uses_in_app_file_preview,
         test_vault_supports_bulk_sequential_uploads,
+        test_vault_deletion_requires_security_phrase,
+        test_chat_can_delete_vault_documents_after_phrase,
         test_chat_can_send_vault_documents_by_email,
     ]
 

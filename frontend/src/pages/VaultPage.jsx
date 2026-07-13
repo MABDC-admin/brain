@@ -4,6 +4,7 @@ import { useHaptic } from '../hooks/useHaptic.js';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
+const VAULT_DELETE_GUARD = { requiredPhrase: "banana" };
 
 export default function VaultPage({ workspace }) {
   const [files, setFiles] = useState([]);
@@ -125,7 +126,14 @@ export default function VaultPage({ workspace }) {
   const deleteFile = async (id) => {
     haptic.delete();
     setFiles(p => p.filter(f => f.id !== id));
-    try { await fetch(`${API}/items/${id}`, { method: 'DELETE' }); } catch {}
+    try {
+      const res = await fetch(`${API}/api/vault/${id}?phrase=${encodeURIComponent("banana")}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+    } catch {
+      load();
+      haptic.error();
+      alert('Delete failed. Check the security phrase and try again.');
+    }
   };
 
   const toggleLock = async (id, currentLocked) => {
@@ -334,7 +342,14 @@ export default function VaultPage({ workspace }) {
         ) : (
           <div className="space-y-3">
             {files.map((f) => (
-              <SwipeableRow key={f.id} onDelete={() => deleteFile(f.id)} deleteTitle="Delete vault file?" deleteItemName={f.title}>
+              <SwipeableRow
+                key={f.id}
+                onDelete={() => deleteFile(f.id)}
+                deleteTitle="Delete vault file?"
+                deleteItemName={f.title}
+                deleteMessage="This permanently removes the vault record and stored file. Type the security phrase to continue."
+                deleteRequiredPhrase={VAULT_DELETE_GUARD.requiredPhrase}
+              >
                 <div className="bg-[#14151b] border border-[#2a2b36] rounded-2xl p-4 flex items-center gap-4 group cursor-pointer"
                   onClick={() => openPreview(f)}>
                   <div className="w-12 h-12 rounded-xl bg-[#0b0c10] border border-[#2a2b36] flex items-center justify-center shrink-0">

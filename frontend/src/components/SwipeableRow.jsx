@@ -7,7 +7,15 @@ import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
  * SwipeableRow — swipe left to reveal delete button.
  * Works on touch (mobile) and mouse (desktop drag).
  */
-export default function SwipeableRow({ children, onDelete, disabled = false, deleteTitle = 'Delete item?', deleteItemName = '' }) {
+export default function SwipeableRow({
+  children,
+  onDelete,
+  disabled = false,
+  deleteTitle = 'Delete item?',
+  deleteItemName = '',
+  deleteMessage,
+  deleteRequiredPhrase = '',
+}) {
   const [offset,    setOffset]    = useState(0);
   const [revealed,  setRevealed]  = useState(false);
   const startX     = useRef(null);
@@ -63,6 +71,8 @@ export default function SwipeableRow({ children, onDelete, disabled = false, del
     confirmDelete({
       title: deleteTitle,
       itemName: deleteItemName,
+      ...(deleteMessage ? { message: deleteMessage } : {}),
+      ...(deleteRequiredPhrase ? { requiredPhrase: deleteRequiredPhrase } : {}),
       onConfirm: () => {
         haptic.delete();
         return onDelete?.();

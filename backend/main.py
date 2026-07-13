@@ -7,7 +7,7 @@ import re
 import secrets
 import uuid
 
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -83,6 +83,9 @@ def uploaded_file_url(filename: str) -> str:
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
+DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
+DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
+VAULT_DELETE_PHRASE = os.getenv("VAULT_DELETE_PHRASE", "banana")
 
 
 def normalize_search_text(value: str) -> str:
@@ -101,6 +104,60 @@ def find_best_vault_document(query: str, db: Session) -> Optional[models.Item]:
             best_doc = doc
             best_score = score
     return best_doc if best_score > 0 else None
+
+
+def find_vault_document_by_title(title: str, db: Session) -> Optional[models.Item]:
+    return (
+        db.query(models.Item)
+        .filter(models.Item.type == "vault_file", models.Item.title == title)
+        .first()
+    )
+
+
+def has_security_phrase(message: str) -> bool:
+    tokens = normalize_search_text(message).split()
+    return any(secrets.compare_digest(token, VAULT_DELETE_PHRASE.lower()) for token in tokens)
+
+
+def is_exact_security_phrase(message: str) -> bool:
+    return secrets.compare_digest(normalize_search_text(message), VAULT_DELETE_PHRASE.lower())
+
+
+def local_upload_path(image_url: str | None) -> Optional[str]:
+    if not image_url or "/static/" not in image_url:
+        return None
+    filename = image_url.rsplit("/static/", 1)[-1].split("?", 1)[0].split("#", 1)[0]
+    filename = os.path.basename(filename)
+    if not filename:
+        return None
+    return os.path.join("uploads", filename)
+
+
+def delete_vault_document(item: models.Item, db: Session) -> None:
+    upload_path = local_upload_path(item.image_url)
+    db.delete(item)
+    db.commit()
+    if upload_path and os.path.exists(upload_path):
+        try:
+            os.remove(upload_path)
+        except OSError:
+            logger.warning("Could not remove vault upload file: %s", upload_path)
+
+
+@app.delete("/api/vault/{item_id}")
+def delete_vault_item(
+    item_id: int,
+    phrase: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    if not secrets.compare_digest((phrase or "").strip(), VAULT_DELETE_PHRASE):
+        raise HTTPException(status_code=403, detail="Security phrase is required")
+
+    item = db.query(models.Item).filter(models.Item.id == item_id, models.Item.type == "vault_file").first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Vault document not found")
+    delete_vault_document(item, db)
+    return {"ok": True}
 
 
 def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
@@ -165,6 +222,56 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
     if ok:
         return {"reply": f"Sent {doc.title} to {to_email}."}
     return {"reply": f"I found {doc.title}, but could not send it: {detail}"}
+
+
+def pending_delete_query(history: list) -> str:
+    for h in reversed(history[-8:]):
+        if not isinstance(h, dict) or h.get("role") != "user":
+            continue
+        content = h.get("content", "")
+        if DELETE_WORD_RE.search(content or ""):
+            return content
+    return ""
+
+
+def pending_delete_title(history: list) -> str:
+    for h in reversed(history[-8:]):
+        if not isinstance(h, dict) or h.get("role") != "assistant":
+            continue
+        content = h.get("content", "")
+        match = re.search(r"^I found (.+?)\\. To delete it, reply with the security phrase:", content or "")
+        if match:
+            return match.group(1)
+    return ""
+
+
+def ask_for_vault_delete_phrase(doc: models.Item) -> dict:
+    return {"reply": f"I found {doc.title}. To delete it, reply with the security phrase: {VAULT_DELETE_PHRASE}"}
+
+
+def handle_document_delete_request(message: str, history: list, db: Session) -> Optional[dict]:
+    current_delete_request = bool(DELETE_WORD_RE.search(message or ""))
+    phrase_provided = is_exact_security_phrase(message or "")
+    previous_delete_request = pending_delete_query(history) if phrase_provided else ""
+
+    if not current_delete_request and not previous_delete_request:
+        return None
+
+    if current_delete_request and not DOCUMENT_WORD_RE.search(message or ""):
+        return None
+
+    search_text = message if current_delete_request else previous_delete_request
+    confirmed_title = pending_delete_title(history) if phrase_provided else ""
+    doc = find_vault_document_by_title(confirmed_title, db) if confirmed_title else find_best_vault_document(search_text, db)
+    if not doc:
+        return {"reply": "I could not find the vault document to delete. Tell me the document name, then I will ask for the security phrase."}
+
+    if current_delete_request:
+        return ask_for_vault_delete_phrase(doc)
+
+    doc_title = doc.title
+    delete_vault_document(doc, db)
+    return {"reply": f"Deleted {doc_title} from the vault."}
 
 @app.post("/api/scan", response_model=List[schemas.Item])
 async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
@@ -254,6 +361,10 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     data    = await request.json()
     message = data.get("message", "")
     history = data.get("history", [])
+
+    delete_intent = handle_document_delete_request(message, history, db)
+    if delete_intent:
+        return delete_intent
 
     mail_intent = handle_document_email_request(message, history, db)
     if mail_intent:
