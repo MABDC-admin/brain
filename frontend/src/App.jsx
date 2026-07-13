@@ -43,6 +43,71 @@ const routeFallback = (
   </div>
 );
 
+function LoginScreen({ onAuthenticated }) {
+  const [email, setEmail] = useState('sottodennis@gmail.com');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const response = await fetch(`${API}/api/auth/login`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!response.ok) throw new Error('Invalid email or password');
+      onAuthenticated();
+    } catch (err) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0b0c10] text-white flex items-center justify-center px-5">
+      <form onSubmit={submit} className="w-full max-w-sm border border-[#252733] bg-[#12141b] rounded-2xl p-6 shadow-2xl shadow-black/30">
+        <div className="mb-6">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500 flex items-center justify-center font-black text-lg mb-4">CB</div>
+          <h1 className="text-2xl font-bold">Command Brain</h1>
+          <p className="text-sm text-gray-400 mt-1">Sign in to continue.</p>
+        </div>
+        <label className="block text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">Email</label>
+        <input
+          type="email"
+          value={email}
+          onChange={event => setEmail(event.target.value)}
+          className="w-full bg-[#0b0c10] border border-[#2a2b36] rounded-xl px-4 py-3 text-white outline-none focus:border-indigo-400 mb-4"
+          autoComplete="username"
+          required
+        />
+        <label className="block text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">Password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={event => setPassword(event.target.value)}
+          className="w-full bg-[#0b0c10] border border-[#2a2b36] rounded-xl px-4 py-3 text-white outline-none focus:border-indigo-400"
+          autoComplete="current-password"
+          required
+        />
+        {error && <p className="text-sm text-red-300 mt-3">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full mt-5 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition-colors"
+        >
+          {loading ? 'Signing in...' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function AnimatedRoutes({ children }) {
   const location = useLocation();
   return (
@@ -59,6 +124,8 @@ function AppInner() {
   const [onboarded,  setOnboarded]  = useState(() => !!localStorage.getItem('onboarded'));
   const [showSearch, setShowSearch] = useState(false);
   const [workspace,  setWorkspace]  = useState(() => localStorage.getItem('workspace') || 'Personal');
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
   const fileInputRef = useRef(null);
   
   const savedPin = localStorage.getItem('app_pin') ? JSON.parse(localStorage.getItem('app_pin')) : '';
@@ -74,12 +141,24 @@ function AppInner() {
     }
   }, []);
 
+  useEffect(() => {
+    fetch(`${API}/api/auth/me`, { credentials: 'include' })
+      .then(res => res.ok ? res.json() : { authenticated: false })
+      .then(data => setAuthenticated(!!data.authenticated))
+      .catch(() => setAuthenticated(false))
+      .finally(() => setAuthChecked(true));
+  }, []);
+
   const loadItems = useCallback(() => {
-    fetch(`${API}/items?workspace=${encodeURIComponent(workspace)}`)
+    if (!authenticated) {
+      setItems([]);
+      return;
+    }
+    fetch(`${API}/items?workspace=${encodeURIComponent(workspace)}`, { credentials: 'include' })
       .then(res => res.json())
       .then(data => setItems(data))
       .catch(() => setItems([]));
-  }, [workspace]);
+  }, [authenticated, workspace]);
 
   useEffect(() => { loadItems(); }, [loadItems]);
 
@@ -90,7 +169,7 @@ function AppInner() {
     const formData = new FormData();
     for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
     try {
-      const res = await fetch(`${API}/api/scan`, { method: 'POST', body: formData });
+      const res = await fetch(`${API}/api/scan`, { method: 'POST', body: formData, credentials: 'include' });
       if (res.ok) loadItems();
       else alert('Scan failed. Set your API key in Settings → AI & Privacy');
     } catch { alert('Cannot connect to backend.'); }
@@ -98,10 +177,6 @@ function AppInner() {
   };
 
   const shared = { items, loadItems, workspace };
-
-  if (!onboarded) {
-    return <OnboardingScreen onComplete={() => setOnboarded(true)} />;
-  }
 
   const isSharedRoute = location.pathname.startsWith('/shared/');
   if (isSharedRoute) {
@@ -114,6 +189,18 @@ function AppInner() {
         </React.Suspense>
       </ThemeProvider>
     );
+  }
+
+  if (!authChecked) {
+    return routeFallback;
+  }
+
+  if (!authenticated) {
+    return <LoginScreen onAuthenticated={() => setAuthenticated(true)} />;
+  }
+
+  if (!onboarded) {
+    return <OnboardingScreen onComplete={() => setOnboarded(true)} />;
   }
 
   if (!isUnlocked && savedPin) {

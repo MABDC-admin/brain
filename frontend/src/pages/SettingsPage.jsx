@@ -3,7 +3,7 @@ import {
   ChevronRight, ChevronLeft, Sliders, ShieldCheck, Cloud,
   Bell, Info, User, Check, Eye, EyeOff, Moon, Sun,
   Lock, Key, Cpu, Trash2,
-  Download, RefreshCw, Smartphone
+  Download, RefreshCw, Smartphone, LogOut
 } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme.js';
 import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
@@ -509,6 +509,14 @@ export default function SettingsPage() {
   const name  = getLS('profile_name',  'Ali Hassan');
   const email = getLS('profile_email', 'ali@example.com');
 
+  const logout = async () => {
+    try {
+      await fetch(`${API}/api/auth/logout`, { method: 'POST', credentials: 'include' });
+    } finally {
+      window.location.reload();
+    }
+  };
+
   if (panel === 'profile')       return <ProfilePanel       onBack={() => setPanel(null)}/>;
   if (panel === 'preferences')   return <PreferencesPanel   onBack={() => setPanel(null)}/>;
   if (panel === 'ai-privacy')    return <AiPrivacyPanel     onBack={() => setPanel(null)}/>;
@@ -549,6 +557,14 @@ export default function SettingsPage() {
             </button>
           ))}
         </div>
+        <button onClick={logout}
+          className="w-full mt-4 bg-[#14151b] rounded-2xl border border-[#2a2b36] px-4 py-4 flex items-center text-left hover:bg-[#1e1f28] transition-colors">
+          <LogOut className="w-5 h-5 text-gray-400 mr-4"/>
+          <div className="flex-1">
+            <p className="text-white text-[15px]">Log out</p>
+            <p className="text-gray-500 text-[12px] mt-0.5">Return to the sign-in screen</p>
+          </div>
+        </button>
         <p className="text-center text-gray-700 text-xs mt-5">Command Brain v1.0.0</p>
       </div>
     </div>

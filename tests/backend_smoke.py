@@ -11,6 +11,7 @@ temp_db.close()
 os.environ["SQLALCHEMY_DATABASE_URL"] = f"sqlite:///{temp_db.name}"
 os.environ["CLEAR_DATA_TOKEN"] = "smoke-test-token"
 os.environ["VAULT_DELETE_PHRASE"] = "smoke-delete-phrase"
+os.environ["AUTH_REQUIRED"] = "false"
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -35,7 +36,7 @@ def override_get_db():
 
 
 main.app.dependency_overrides[get_db] = override_get_db
-client = TestClient(main.app)
+client = TestClient(main.app, base_url="https://brain.mabdc.com")
 
 
 def test_items_crud_smoke():
@@ -97,6 +98,44 @@ def test_clear_all_requires_token_and_scopes_workspace():
 
 def chat(message: str, history: list[dict] | None = None):
     return client.post("/api/chat", json={"message": message, "history": history or []})
+
+
+def test_auth_protects_private_routes_when_enabled(monkeypatch):
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True, raising=False)
+    monkeypatch.setattr(main, "AUTH_EMAIL", "sottodennis@gmail.com", raising=False)
+    monkeypatch.setattr(main, "AUTH_PASSWORD", "Denskie123", raising=False)
+    monkeypatch.setattr(main, "SESSION_SECRET", "test-session-secret", raising=False)
+
+    unauthenticated = client.get("/items", params={"workspace": "Personal"})
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["detail"] == "Authentication required"
+
+    bad_login = client.post(
+        "/api/auth/login",
+        json={"email": "sottodennis@gmail.com", "password": "wrong"},
+    )
+    assert bad_login.status_code == 401
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "sottodennis@gmail.com", "password": "Denskie123"},
+    )
+    assert login.status_code == 200
+    assert login.json()["email"] == "sottodennis@gmail.com"
+    assert "commandbrain_session" in login.headers.get("set-cookie", "")
+
+    authenticated = client.get("/items", params={"workspace": "Personal"})
+    assert authenticated.status_code == 200
+
+    me = client.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json() == {"authenticated": True, "email": "sottodennis@gmail.com"}
+
+    logout = client.post("/api/auth/logout")
+    assert logout.status_code == 200
+
+    after_logout = client.get("/items", params={"workspace": "Personal"})
+    assert after_logout.status_code == 401
 
 
 def test_assistant_creates_task_note_expense_and_reminder():

@@ -1,5 +1,8 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+import base64
+import hashlib
+import hmac
 import html
 import json
 import logging
@@ -8,9 +11,10 @@ import re
 import secrets
 import uuid
 
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query, Response
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -25,6 +29,11 @@ from dotenv import load_dotenv
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://brain.mabdc.com").rstrip("/")
+AUTH_EMAIL = os.getenv("AUTH_EMAIL", "").strip().lower()
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", secrets.token_urlsafe(32))
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "true").lower() not in {"0", "false", "no", "off"}
+SESSION_COOKIE = "commandbrain_session"
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -72,6 +81,11 @@ app.mount("/static", StaticFiles(directory="uploads"), name="static")
 app.include_router(items_router)
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 def model_data(model: BaseModel, *, exclude_unset: bool = False) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=exclude_unset)
@@ -80,6 +94,101 @@ def model_data(model: BaseModel, *, exclude_unset: bool = False) -> dict:
 
 def uploaded_file_url(filename: str) -> str:
     return f"{PUBLIC_BASE_URL}/static/{filename}"
+
+
+def auth_is_configured() -> bool:
+    return bool(AUTH_EMAIL and AUTH_PASSWORD and SESSION_SECRET)
+
+
+def session_signature(payload: str) -> str:
+    return hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def create_session_token(email: str) -> str:
+    payload = json.dumps({"email": email.lower(), "iat": datetime.utcnow().isoformat()}, separators=(",", ":"))
+    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{encoded}.{session_signature(encoded)}"
+
+
+def verify_session_token(token: str | None) -> Optional[str]:
+    if not token or "." not in token or not auth_is_configured():
+        return None
+    encoded, signature = token.rsplit(".", 1)
+    if not hmac.compare_digest(session_signature(encoded), signature):
+        return None
+    try:
+        padded = encoded + ("=" * (-len(encoded) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return None
+    email = str(payload.get("email") or "").lower()
+    return email if hmac.compare_digest(email, AUTH_EMAIL) else None
+
+
+def request_user_email(request: Request) -> Optional[str]:
+    return verify_session_token(request.cookies.get(SESSION_COOKIE))
+
+
+def set_session_cookie(response: Response, email: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        create_session_token(email),
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=True, samesite="lax")
+
+
+def is_public_path(path: str, method: str) -> bool:
+    if method.upper() == "OPTIONS":
+        return True
+    return (
+        path in {"/api/auth/login", "/api/auth/me", "/api/auth/logout"}
+        or path.startswith("/api/shared/")
+        or path.startswith("/static/")
+        or path in {"/docs", "/redoc", "/openapi.json"}
+    )
+
+
+@app.middleware("http")
+async def require_auth_session(request: Request, call_next):
+    path = request.url.path
+    private_path = path.startswith("/api/") or path.startswith("/items")
+    if AUTH_REQUIRED and private_path and not is_public_path(path, request.method):
+        if not auth_is_configured():
+            return JSONResponse({"detail": "Authentication is not configured"}, status_code=503)
+        if not request_user_email(request):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: LoginRequest, response: Response):
+    if not auth_is_configured():
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
+    email = (payload.email or "").strip().lower()
+    if not hmac.compare_digest(email, AUTH_EMAIL) or not hmac.compare_digest(payload.password or "", AUTH_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    set_session_cookie(response, email)
+    return {"authenticated": True, "email": email}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    email = request_user_email(request)
+    return {"authenticated": bool(email), "email": email}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response):
+    clear_session_cookie(response)
+    return {"ok": True}
 
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)

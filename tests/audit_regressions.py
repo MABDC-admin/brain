@@ -52,6 +52,23 @@ def test_backend_dependencies_are_declared_or_removed() -> None:
     assert "apscheduler" in read("backend/requirements.txt").lower()
 
 
+def test_login_auth_uses_environment_and_http_only_cookie() -> None:
+    backend = read("backend/main.py")
+    frontend = read("frontend/src/App.jsx")
+    settings = read("frontend/src/pages/SettingsPage.jsx")
+    assert "AUTH_EMAIL = os.getenv" in backend
+    assert "AUTH_PASSWORD = os.getenv" in backend
+    assert "SESSION_SECRET = os.getenv" in backend
+    assert "httponly=True" in backend
+    assert "secure=True" in backend
+    assert "/api/auth/login" in frontend
+    assert "/api/auth/me" in frontend
+    assert "/api/auth/logout" in settings
+    assert "Denskie123" not in backend
+    assert "Denskie123" not in frontend
+    assert "Denskie123" not in settings
+
+
 def test_frontend_has_no_development_console_log() -> None:
     assert_absent("frontend/src/main.jsx", "console.log")
 
