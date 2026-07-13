@@ -316,6 +316,36 @@ def test_chat_can_delete_vault_documents_after_phrase() -> None:
     assert "return ask_for_vault_delete_phrase" in backend
 
 
+def test_chat_can_rename_vault_documents() -> None:
+    backend = read("backend/main.py")
+    assert "RENAME_RE" in backend
+    assert "handle_document_rename_request" in backend
+    assert "rename_intent = handle_document_rename_request" in backend
+    assert "preserve_file_extension" in backend
+    assert "Renamed" in backend
+
+
+def test_vault_upload_uses_pdf_text_and_structured_extraction() -> None:
+    backend = read("backend/main.py")
+    assert "extract_pdf_text" in backend
+    assert "render_pdf_pages_for_vision" in backend
+    assert "parse_vault_extraction" in backend
+    assert '"document_title"' in backend
+    assert '"full_text"' in backend
+    assert "Return ONLY valid JSON" in backend
+    assert "pdf_text" in backend
+    assert "body=index_text" in backend
+
+
+def test_rag_query_can_match_vault_titles_without_body() -> None:
+    backend = read("backend/main.py")
+    assert "matching_docs = [" in backend
+    assert "direct_vault_match_answer" in backend
+    assert "normalize_search_text(request.query)" in backend
+    assert "Title:" in backend
+    assert "Summary:" in backend
+
+
 def test_chat_can_send_vault_documents_by_email() -> None:
     backend = read("backend/main.py")
     assert 'EMAIL_RE = re.compile(r"\\b' in backend
@@ -360,6 +390,9 @@ if __name__ == "__main__":
         test_search_page_has_no_mock_recent_searches,
         test_vault_deletion_requires_security_phrase,
         test_chat_can_delete_vault_documents_after_phrase,
+        test_chat_can_rename_vault_documents,
+        test_vault_upload_uses_pdf_text_and_structured_extraction,
+        test_rag_query_can_match_vault_titles_without_body,
         test_chat_can_send_vault_documents_by_email,
     ]
 

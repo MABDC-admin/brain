@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 import html
+import json
 import logging
 import os
 import re
@@ -85,11 +86,13 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECAS
 SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
 DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
 DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
+RENAME_RE = re.compile(r"\brename\b.*?\bto\s+(.+)$", re.IGNORECASE)
 VAULT_DELETE_PHRASE = os.getenv("VAULT_DELETE_PHRASE")
 
 
 def normalize_search_text(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+    normalized = (value or "").lower().replace("labuor", "labour")
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
 
 
 def find_best_vault_document(query: str, db: Session) -> Optional[models.Item]:
@@ -112,6 +115,13 @@ def find_vault_document_by_title(title: str, db: Session) -> Optional[models.Ite
         .filter(models.Item.type == "vault_file", models.Item.title == title)
         .first()
     )
+
+
+def preserve_file_extension(old_title: str, new_title: str) -> str:
+    old_ext = os.path.splitext(old_title or "")[1]
+    if old_ext and not os.path.splitext(new_title)[1]:
+        return f"{new_title.strip()}{old_ext}"
+    return new_title.strip()
 
 
 def has_security_phrase(message: str) -> bool:
@@ -230,6 +240,31 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
     return {"reply": f"I found {doc.title}, but could not send it: {detail}"}
 
 
+def handle_document_rename_request(message: str, history: list, db: Session) -> Optional[dict]:
+    match = RENAME_RE.search(message or "")
+    if not match:
+        return None
+
+    new_title = match.group(1).strip().strip('"').strip("'")
+    if not new_title:
+        return {"reply": "Tell me the new document name after `rename to`."}
+
+    search_parts = [RENAME_RE.sub(" ", message or "")]
+    for h in reversed(history[-8:]):
+        content = h.get("content", "") if isinstance(h, dict) else ""
+        if content:
+            search_parts.append(content)
+
+    doc = find_best_vault_document(" ".join(search_parts), db)
+    if not doc:
+        return {"reply": "I could not find which vault document to rename. Try: rename LABOUR CONTRACT to Dennis Labour contract"}
+
+    old_title = doc.title
+    doc.title = preserve_file_extension(old_title, new_title)
+    db.commit()
+    return {"reply": f"Renamed {old_title} to {doc.title}."}
+
+
 def pending_delete_query(history: list) -> str:
     for h in reversed(history[-8:]):
         if not isinstance(h, dict) or h.get("role") != "user":
@@ -278,6 +313,73 @@ def handle_document_delete_request(message: str, history: list, db: Session) -> 
     doc_title = doc.title
     delete_vault_document(doc, db)
     return {"reply": f"Deleted {doc_title} from the vault."}
+
+
+def extract_pdf_text(contents: bytes) -> str:
+    try:
+        pdf_doc = fitz.open(stream=contents, filetype="pdf")
+        try:
+            pages = [page.get_text("text").strip() for page in pdf_doc]
+        finally:
+            pdf_doc.close()
+        return "\n\n".join(page for page in pages if page).strip()
+    except Exception as exc:
+        logger.warning("PDF text extraction failed: %s", exc)
+        return ""
+
+
+def render_pdf_pages_for_vision(contents: bytes, max_pages: int = 3) -> list[str]:
+    images = []
+    try:
+        pdf_doc = fitz.open(stream=contents, filetype="pdf")
+        try:
+            for page_index in range(min(max_pages, pdf_doc.page_count)):
+                page = pdf_doc.load_page(page_index)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                images.append(base64.b64encode(pix.tobytes("jpeg")).decode("utf-8"))
+        finally:
+            pdf_doc.close()
+    except Exception as exc:
+        logger.warning("PDF render failed: %s", exc)
+    return images
+
+
+def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> dict:
+    fallback = {
+        "document_title": os.path.splitext(filename)[0] or "Document",
+        "category": "Document",
+        "expiry_date": "None",
+        "summary": "",
+        "full_text": pdf_text,
+    }
+    try:
+        clean = (raw_text or "").strip()
+        if clean.startswith("```"):
+            clean = "\n".join(line for line in clean.splitlines() if not line.strip().startswith("```"))
+        data = json.loads(clean)
+        return {
+            "document_title": str(data.get("document_title") or fallback["document_title"]).strip(),
+            "category": str(data.get("category") or fallback["category"]).strip(),
+            "expiry_date": str(data.get("expiry_date") or fallback["expiry_date"]).strip(),
+            "summary": str(data.get("summary") or fallback["summary"]).strip(),
+            "full_text": str(data.get("full_text") or fallback["full_text"]).strip(),
+        }
+    except Exception:
+        parts = (raw_text or "").split("|", 2)
+        if len(parts) >= 2:
+            fallback["category"] = parts[0].strip() or fallback["category"]
+            fallback["expiry_date"] = parts[1].strip() or fallback["expiry_date"]
+            fallback["full_text"] = parts[2].strip() if len(parts) > 2 else fallback["full_text"]
+        return fallback
+
+
+def direct_vault_match_answer(docs: list[models.Item]) -> Optional[str]:
+    if not docs:
+        return None
+    if any((doc.body or "").strip() for doc in docs):
+        return None
+    lines = [f"{doc.title} — {doc.subtitle or 'Vault document'}" for doc in docs[:5]]
+    return "I found these matching vault documents:\n" + "\n".join(f"- {line}" for line in lines)
 
 @app.post("/api/scan", response_model=List[schemas.Item])
 async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
@@ -371,6 +473,10 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     delete_intent = handle_document_delete_request(message, history, db)
     if delete_intent:
         return delete_intent
+
+    rename_intent = handle_document_rename_request(message, history, db)
+    if rename_intent:
+        return rename_intent
 
     mail_intent = handle_document_email_request(message, history, db)
     if mail_intent:
@@ -477,11 +583,37 @@ async def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
     
     if not docs:
         return {"answer": "You don't have any documents in this workspace yet. Upload some files to the Vault to get started!"}
-        
+
+    query_text = normalize_search_text(request.query)
+    query_tokens = {token for token in query_text.split() if len(token) > 2}
+    matching_docs = [
+        d for d in docs
+        if query_tokens and any(
+            token in normalize_search_text(" ".join([d.title or "", d.subtitle or "", d.body or "", d.tags or ""]))
+            for token in query_tokens
+        )
+    ]
+    docs_for_context = matching_docs or docs
+    if matching_docs:
+        direct_answer = direct_vault_match_answer(matching_docs)
+        if direct_answer:
+            return {"answer": direct_answer}
+
     context_blocks = []
-    for d in docs:
-        if d.body:
-            context_blocks.append(f"Document: {d.title}\\n{d.body}\\n---")
+    for d in docs_for_context:
+        context_blocks.append(
+            "\n".join(
+                part for part in [
+                    f"Document: {d.title}",
+                    f"Title: {d.title}",
+                    f"Summary: {d.subtitle}" if d.subtitle else "",
+                    f"Tags: {d.tags}" if d.tags else "",
+                    d.body or "",
+                    "---",
+                ]
+                if part
+            )
+        )
             
     context_str = "\\n".join(context_blocks)
     if not context_str.strip():
@@ -604,24 +736,16 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
     contents = await file.read()
     mime_type = file.content_type or "application/pdf"
     
-    base64_image = ""
-    is_image = False
+    vision_images = []
+    pdf_text = ""
 
-    # Convert PDF to image if needed
+    # Convert PDF pages to images and extract embedded text when available.
     if "pdf" in mime_type.lower() or file.filename.lower().endswith(".pdf"):
-        try:
-            pdf_doc = fitz.open(stream=contents, filetype="pdf")
-            page = pdf_doc.load_page(0)
-            pix = page.get_pixmap()
-            base64_image = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
-            mime_type = "image/jpeg"
-            is_image = True
-            pdf_doc.close()
-        except Exception as e:
-            logger.warning("PDF parse error for %s: %s", file.filename, e)
+        pdf_text = extract_pdf_text(contents)
+        vision_images = render_pdf_pages_for_vision(contents)
+        mime_type = "image/jpeg"
     elif mime_type.startswith("image/"):
-        base64_image = base64.b64encode(contents).decode("utf-8")
-        is_image = True
+        vision_images = [base64.b64encode(contents).decode("utf-8")]
     
     # Save locally
     ext = file.filename.split('.')[-1] if '.' in file.filename else "file"
@@ -632,22 +756,32 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
 
     image_url = uploaded_file_url(filename)
 
-    prompt = "Extract from this document: 1. Category (e.g., Tax, ID, Employee Contract), 2. The Expiry Date (if any, exactly as 'DD MMM YYYY', else 'None'), 3. THE FULL READABLE TEXT of the document for search indexing. Format exactly as: Category|ExpiryDate|FullText"
+    prompt = f"""
+You are indexing an employee/document vault file.
+Filename: {file.filename}
+Embedded PDF text, if present:
+{pdf_text[:12000]}
 
-    ocr_text = "Document|None|"
+Read the visible pages and embedded text. Identify the document accurately, especially labour contracts, insurance certificates, IDs, visas, passports, NOCs, and employment documents.
+Return ONLY valid JSON with these keys:
+{{"document_title":"specific human title","category":"document category","expiry_date":"YYYY-MM-DD or None","summary":"one sentence summary","full_text":"best readable text for search"}}
+If an expiry date is not explicitly present, use "None". Do not guess dates.
+"""
+
+    ocr_text = ""
     
-    if is_image and base64_image:
+    if vision_images:
         try:
             async with httpx.AsyncClient() as client:
+                content = [{"type": "text", "text": prompt}]
+                for image_b64 in vision_images:
+                    content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}})
                 payload = {
                     "model": "openai/gpt-4o",
                     "messages": [
                         {
                             "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}
-                            ]
+                            "content": content
                         }
                     ]
                 }
@@ -662,16 +796,27 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
         except Exception as e:
             logger.exception("AI exception while processing vault upload: %s", e)
 
-    parts = ocr_text.split("|", 2)
-    category = parts[0].strip() if len(parts) > 0 else "Document"
-    expiry = parts[1].strip() if len(parts) > 1 else "None"
-    full_text = parts[2].strip() if len(parts) > 2 else ""
+    extracted = parse_vault_extraction(ocr_text, file.filename, pdf_text)
+    category = extracted["category"] or "Document"
+    expiry = extracted["expiry_date"] or "None"
+    summary = extracted["summary"]
+    index_text = "\n\n".join(
+        part for part in [
+            f"Filename: {file.filename}",
+            f"Title: {extracted['document_title']}",
+            f"Category: {category}",
+            f"Summary: {summary}" if summary else "",
+            extracted["full_text"],
+            pdf_text,
+        ]
+        if part
+    )
 
     vault_item = models.Item(
         type="vault_file",
         title=file.filename,
         subtitle=f"{category} • Processed today",
-        body=full_text,
+        body=index_text,
         image_url=image_url,
         workspace=workspace
     )
