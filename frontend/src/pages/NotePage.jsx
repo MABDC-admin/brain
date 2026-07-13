@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, MoreVertical, Pin, FileText, Tag, X, Trash2, ChevronLeft, Plus, Share2, QrCode } from 'lucide-react';
+import { Search, MoreVertical, Pin, X, Trash2, ChevronLeft, Plus, Share2, QrCode } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
@@ -77,7 +77,7 @@ export default function NotePage({ loadItems, workspace }) {
       .then(r => r.json())
       .then(data => setNotes(data))
       .catch(() => setNotes([]));
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { load(); }, [load, workspace]);
 

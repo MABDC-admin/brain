@@ -30,8 +30,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
-  const url = event.request.url;
-  const isAPI = url.includes(':8001') || url.includes('/api/');
+  const requestUrl = new URL(event.request.url);
+  const isAPI = requestUrl.pathname.startsWith('/api/') || requestUrl.pathname.startsWith('/items');
   const isHTML = event.request.headers.get('accept')?.includes('text/html');
 
   if (isAPI) {
@@ -62,7 +62,7 @@ self.addEventListener('fetch', (event) => {
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           }
           return response;
-        }).catch(err => {
+        }).catch(() => {
           // Ignore network errors for old hashed assets that no longer exist
         });
         return cached || networkFetch;

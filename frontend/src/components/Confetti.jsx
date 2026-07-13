@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 
 const COLORS = ['#6366f1','#a855f7','#22c55e','#f97316','#3b82f6','#ec4899','#14b8a6','#fbbf24'];
 const SHAPES = ['●','★','♦','▲','■'];

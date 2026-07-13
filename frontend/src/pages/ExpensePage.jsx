@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
-import { Search, MoreVertical, LayoutGrid, List, Grid2x2, Wallet, X, Trash2, Target, AlertTriangle, Check, RefreshCw } from 'lucide-react';
+import { MoreVertical, LayoutGrid, List, Grid2x2, Wallet, X, Target, AlertTriangle, Check, RefreshCw } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
@@ -40,7 +40,7 @@ export default function ExpensePage({ loadItems, workspace }) {
       .then(r => r.json())
       .then(setExpenses)
       .catch(() => setExpenses([]));
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { load(); }, [load, workspace]);
 
@@ -72,7 +72,7 @@ export default function ExpensePage({ loadItems, workspace }) {
       await fetch(`${API}/items`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'expense', title: `${form.amount} ${form.currency} ${form.title}`, subtitle, workspace: workspace || 'Personal' }),
+        body: JSON.stringify({ type: 'expense', title, subtitle, workspace: workspace || 'Personal' }),
       });
     } catch {}
     load();

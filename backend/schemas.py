@@ -1,4 +1,8 @@
 from pydantic import BaseModel
+try:
+    from pydantic import ConfigDict
+except ImportError:
+    ConfigDict = None
 from datetime import datetime
 from typing import Optional
 
@@ -22,5 +26,8 @@ class Item(ItemBase):
     id: int
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    if ConfigDict:
+        model_config = ConfigDict(from_attributes=True)
+    else:
+        class Config:
+            orm_mode = True

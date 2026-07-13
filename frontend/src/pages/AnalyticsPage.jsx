@@ -3,8 +3,7 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
-import { TrendingUp, TrendingDown, CheckCircle2, Wallet, FileText, Bell, BarChart2, ChevronLeft } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { TrendingUp, CheckCircle2, Wallet, FileText, Bell, BarChart2 } from 'lucide-react';
 import { useCountUp } from '../hooks/useCountUp.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
@@ -17,12 +16,6 @@ const CATEGORIES = Object.keys(CAT_COLORS);
 
 function parseAmount(title = '')   { const m = title.match(/^(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; }
 function parseCat(sub = '')        { return CATEGORIES.find(c => sub.includes(c)) || 'Other'; }
-function dayLabel(daysAgo)         {
-  const d = new Date(); d.setDate(d.getDate() - daysAgo);
-  return d.toLocaleDateString('en-GB', { weekday: 'short' });
-}
-function todayStr() { return new Date().toLocaleDateString('en-GB'); }
-
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -40,7 +33,6 @@ export default function AnalyticsPage() {
   const [reminders, setReminders] = useState([]);
   const [range,     setRange]     = useState('7d');
   const [loading,   setLoading]   = useState(true);
-  const navigate = useNavigate();
 
   const load = useCallback(async () => {
     setLoading(true);

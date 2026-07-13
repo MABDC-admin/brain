@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronLeft, Lock, Unlock, Plus, Trash2, X, BookOpen, Hash } from 'lucide-react';
+import { ChevronLeft, Lock, Plus, Trash2, BookOpen } from 'lucide-react';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const MOODS = ['😊', '😐', '😔', '🔥', '😴', '🤔', '💪', '❤️'];
@@ -23,7 +23,7 @@ function wordCount(text) {
 function PinScreen({ onUnlock }) {
   const [pin,     setPin]     = useState('');
   const [error,   setError]   = useState(false);
-  const [setting, setSetting] = useState(!localStorage.getItem(PIN_KEY));
+  const [setting] = useState(!localStorage.getItem(PIN_KEY));
   const [confirm, setConfirm] = useState('');
   const [step,    setStep]    = useState(1); // 1=enter, 2=confirm
 
@@ -90,7 +90,7 @@ function PinScreen({ onUnlock }) {
 function EntryEditor({ entry, onClose, onSave, onDelete }) {
   const [body,  setBody]  = useState(entry?.body  || '');
   const [mood,  setMood]  = useState(entry?.mood  || '');
-  const [title, setTitle] = useState(entry?.title || formatDate(new Date()));
+  const [title] = useState(entry?.title || formatDate(new Date()));
   const [saving, setSaving] = useState(false);
   const textRef = useRef();
 
@@ -171,7 +171,7 @@ export default function JournalPage() {
     await fetch(`${API}/items`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'journal', title, subtitle }),
+      body: JSON.stringify({ type: 'journal', title, subtitle, body }),
     });
     load();
   };

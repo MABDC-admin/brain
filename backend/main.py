@@ -1,38 +1,65 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+import html
+import logging
+import os
+import secrets
+import uuid
+
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import os
 import httpx
 import base64
-import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-import smtplib
-from email.message import EmailMessage
-from datetime import datetime
-
-SMTP_EMAIL = os.getenv('SMTP_EMAIL')
-SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
 
 import fitz
 from dotenv import load_dotenv
 
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://brain.mabdc.com").rstrip("/")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "https://brain.mabdc.com,http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
+logger = logging.getLogger("commandbrain")
 
 import models, schemas
 from database import SessionLocal, engine
+from deps import get_db
+from routers.items import router as items_router
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+scheduler = BackgroundScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if not scheduler.running:
+        scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,51 +67,17 @@ app.add_middleware(
 
 os.makedirs("uploads", exist_ok=True)
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
+app.include_router(items_router)
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-@app.get("/items", response_model=List[schemas.Item])
-def read_items(skip: int = 0, limit: int = 100, workspace: str = "Personal", db: Session = Depends(get_db)):
-    items = db.query(models.Item).filter(models.Item.workspace == workspace).order_by(models.Item.created_at.desc()).offset(skip).limit(limit).all()
-    return items
+def model_data(model: BaseModel, *, exclude_unset: bool = False) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_unset=exclude_unset)
+    return model.dict(exclude_unset=exclude_unset)
 
-@app.post("/items", response_model=schemas.Item)
-def create_item(item: schemas.ItemCreate, db: Session = Depends(get_db)):
-    db_item = models.Item(**item.dict())
-    db.add(db_item)
-    db.commit()
-    db.refresh(db_item)
-    return db_item
 
-@app.get("/items/type/{item_type}", response_model=List[schemas.Item])
-def read_items_by_type(item_type: str, workspace: str = "Personal", db: Session = Depends(get_db)):
-    return db.query(models.Item).filter(models.Item.type == item_type, models.Item.workspace == workspace).order_by(models.Item.created_at.desc()).all()
-
-@app.patch("/items/{item_id}", response_model=schemas.Item)
-def update_item(item_id: int, item: schemas.ItemBase, db: Session = Depends(get_db)):
-    db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
-    if not db_item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    for key, value in item.dict(exclude_unset=True).items():
-        setattr(db_item, key, value)
-    db.commit()
-    db.refresh(db_item)
-    return db_item
-
-@app.delete("/items/{item_id}")
-def delete_item(item_id: int, db: Session = Depends(get_db)):
-    db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
-    if not db_item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    db.delete(db_item)
-    db.commit()
-    return {"ok": True}
-
+def uploaded_file_url(filename: str) -> str:
+    return f"{PUBLIC_BASE_URL}/static/{filename}"
 
 @app.post("/api/scan", response_model=List[schemas.Item])
 async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
@@ -119,7 +112,7 @@ async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(
             with open(filepath, "wb") as f:
                 f.write(contents)
                 
-            image_url = f"http://localhost:8001/static/{filename}"
+            image_url = uploaded_file_url(filename)
             
             payload = {
                 "model": "openai/gpt-4o",
@@ -157,7 +150,7 @@ async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(
             
             # Default to Personal workspace for auto-scanned notes unless specified
             item_data = schemas.ItemCreate(type="note", title=title, subtitle=subtitle, image_url=image_url, expiry_date=expiry_date, workspace="Personal")
-            db_item = models.Item(**item_data.dict())
+            db_item = models.Item(**model_data(item_data))
             db.add(db_item)
             db.commit()
             db.refresh(db_item)
@@ -225,7 +218,7 @@ async def parse_receipt(files: List[UploadFile] = File(...), db: Session = Depen
             ext      = "jpg" if mime_type.endswith("jpeg") else mime_type.split("/")[-1]
             filename = f"{uuid.uuid4()}.{ext}"
             with open(os.path.join("uploads", filename), "wb") as f: f.write(contents)
-            image_url = f"http://localhost:8001/static/{filename}"
+            image_url = uploaded_file_url(filename)
 
             prompt = (
                 "This is a receipt. Extract each line item with its price. "
@@ -317,14 +310,15 @@ USER QUERY:
     return {"answer": answer}
 
 def send_expiry_email(to_email: str, doc_title: str, expiry_date: str, days_left: int = 0):
-    import os
     MABDC_MAIL_API_KEY = os.getenv('MABDC_MAIL_API_KEY')
     if not MABDC_MAIL_API_KEY:
-        print(f"[MOCK EMAIL] To {to_email}: '{doc_title}' expires in {days_left} days on {expiry_date}")
+        logger.info("[MOCK EMAIL] To %s: '%s' expires in %s days on %s", to_email, doc_title, days_left, expiry_date)
         return
-        
+
+    safe_doc_title = html.escape(doc_title)
+    safe_expiry_date = html.escape(expiry_date)
+
     try:
-        import requests
         url = 'https://api-mail.mabdc.com/v1/emails'
         headers = {
             'Authorization': f'Bearer {MABDC_MAIL_API_KEY}',
@@ -336,7 +330,7 @@ def send_expiry_email(to_email: str, doc_title: str, expiry_date: str, days_left
             <h2>Command Brain Vault Alert</h2>
             <p>Hello,</p>
             <p>This is an automated reminder.</p>
-            <p>Your document <strong>'{doc_title}'</strong> is expiring on <strong>{expiry_date}</strong> (in {days_left} days).</p>
+            <p>Your document <strong>'{safe_doc_title}'</strong> is expiring on <strong>{safe_expiry_date}</strong> (in {days_left} days).</p>
             <p>Please take necessary actions to renew or update this document.</p>
             <br/>
             <p>Vault AI</p>
@@ -349,21 +343,21 @@ def send_expiry_email(to_email: str, doc_title: str, expiry_date: str, days_left
             'subject': f"Action Required: '{doc_title}' expires in {days_left} days",
             'html': html_body
         }
-        
-        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+
+        resp = httpx.post(url, headers=headers, json=payload, timeout=10)
         
         if resp.status_code in [200, 202]:
-            print(f"Sent expiry email for '{doc_title}' to {to_email} via api-mail.mabdc.com")
+            logger.info("Sent expiry email for '%s' to %s via api-mail.mabdc.com", doc_title, to_email)
         else:
-            print(f"Email API failed: {resp.status_code} {resp.text}")
+            logger.warning("Email API failed: %s %s", resp.status_code, resp.text)
     except Exception as e:
-        print(f"Email failed: {e}")
+        logger.exception("Email failed: %s", e)
 
 
 def check_expirations_and_notify():
     db = SessionLocal()
     try:
-        items = db.query(models.Item).filter(models.Item.expiry_date != None).all()
+        items = db.query(models.Item).filter(models.Item.expiry_date.is_not(None)).all()
         today = datetime.now()
         for item in items:
             try:
@@ -387,21 +381,15 @@ def check_expirations_and_notify():
                     if delta in [30, 15, 10, 5]:
                         send_expiry_email('sottodennis@gmail.com', item.title, exp_date_str, delta)
             except Exception as e:
-                print(f"Error parsing expiry date for item {item.id}: {e}")
+                logger.warning("Error parsing expiry date for item %s: %s", item.id, e)
     finally:
         db.close()
 
-scheduler = BackgroundScheduler()
 scheduler.add_job(check_expirations_and_notify, CronTrigger(hour=8, minute=0))
-scheduler.start()
-
-@app.on_event('shutdown')
-def shutdown_event():
-    scheduler.shutdown()
 
 @app.post("/api/vault_upload")
 async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Company"), db: Session = Depends(get_db)):
-    print(f"Vault Upload triggered for {file.filename} ({file.content_type})")
+    logger.info("Vault upload triggered for %s (%s)", file.filename, file.content_type)
     if not OPENROUTER_API_KEY:
         raise HTTPException(status_code=500, detail="OpenRouter API key is not configured.")
 
@@ -422,7 +410,7 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
             is_image = True
             pdf_doc.close()
         except Exception as e:
-            print("PDF Parse error:", e)
+            logger.warning("PDF parse error for %s: %s", file.filename, e)
     elif mime_type.startswith("image/"):
         base64_image = base64.b64encode(contents).decode("utf-8")
         is_image = True
@@ -431,10 +419,10 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
     ext = file.filename.split('.')[-1] if '.' in file.filename else "file"
     filename = f"{uuid.uuid4()}.{ext}"
     os.makedirs("uploads", exist_ok=True)
-    with open(f"uploads/{filename}", "wb") as f:
+    with open(os.path.join("uploads", filename), "wb") as f:
         f.write(contents)
 
-    image_url = f"https://brain.mabdc.com/static/{filename}"
+    image_url = uploaded_file_url(filename)
 
     prompt = "Extract from this document: 1. Category (e.g., Tax, ID, Employee Contract), 2. The Expiry Date (if any, exactly as 'DD MMM YYYY', else 'None'), 3. THE FULL READABLE TEXT of the document for search indexing. Format exactly as: Category|ExpiryDate|FullText"
 
@@ -462,9 +450,9 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
                     data = response.json()
                     ocr_text = data["choices"][0]["message"]["content"]
                 else:
-                    print("AI Error:", response.status_code, response.text)
+                    logger.warning("AI error: %s %s", response.status_code, response.text)
         except Exception as e:
-            print("AI Exception:", e)
+            logger.exception("AI exception while processing vault upload: %s", e)
 
     parts = ocr_text.split("|", 2)
     category = parts[0].strip() if len(parts) > 0 else "Document"
@@ -492,10 +480,9 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
         send_expiry_email("sottodennis@gmail.com", file.filename, expiry)
 
     db.commit()
-    print(f"Vault Upload Success for {file.filename}")
+    logger.info("Vault upload succeeded for %s", file.filename)
     return {"status": "success"}
 
-from pydantic import BaseModel
 class VoiceMemoRequest(BaseModel):
     transcript: str
     workspace: str = 'Personal'
@@ -541,25 +528,23 @@ async def vault_voice(request: VoiceMemoRequest, db: Session = Depends(get_db)):
 
 @app.post('/items/{item_id}/share')
 def share_item(item_id: int, db: Session = Depends(get_db)):
-    import datetime
     db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
     if not db_item:
         raise HTTPException(status_code=404, detail='Item not found')
     
-    db_item.share_token = str(uuid.uuid4())
-    db_item.share_expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+    db_item.share_token = secrets.token_urlsafe(32)
+    db_item.share_expires_at = datetime.utcnow() + timedelta(hours=24)
     db.commit()
     db.refresh(db_item)
     return {'share_token': db_item.share_token, 'expires_at': db_item.share_expires_at}
 
 @app.get('/api/shared/{token}')
 def get_shared_item(token: str, db: Session = Depends(get_db)):
-    import datetime
     db_item = db.query(models.Item).filter(models.Item.share_token == token).first()
     if not db_item:
         raise HTTPException(status_code=404, detail='Link invalid or expired')
     
-    if db_item.share_expires_at and db_item.share_expires_at < datetime.datetime.utcnow():
+    if db_item.share_expires_at and db_item.share_expires_at < datetime.utcnow():
         raise HTTPException(status_code=404, detail='Link expired')
         
     return db_item

@@ -4,8 +4,6 @@ import { Calendar, Bell, MoreVertical, CheckCircle2 } from 'lucide-react';
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const PRIORITY_COLOR = { High: 'text-red-500', Medium: 'text-orange-400', Low: 'text-blue-400' };
 
-const AGENDA_COLORS = ['bg-blue-500', 'bg-purple-500', 'bg-green-500', 'bg-orange-500', 'bg-teal-500', 'bg-pink-500'];
-
 function getTimeFromSubtitle(sub = '') {
   const m = sub.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
   return m ? m[1] : null;

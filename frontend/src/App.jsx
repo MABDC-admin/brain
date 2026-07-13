@@ -1,41 +1,58 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
 import { ThemeProvider } from './ThemeContext.jsx';
 import Layout from './Layout.jsx';
-import HomePage       from './pages/HomePage.jsx';
-import SearchPage     from './pages/SearchPage.jsx';
-import TodayPage      from './pages/TodayPage.jsx';
-import SettingsPage   from './pages/SettingsPage.jsx';
-import TaskPage       from './pages/TaskPage.jsx';
-import ExpensePage    from './pages/ExpensePage.jsx';
-import NotePage       from './pages/NotePage.jsx';
-import WorkspacesPage from './pages/WorkspacesPage.jsx';
-import ReminderPage   from './pages/ReminderPage.jsx';
-import JournalPage    from './pages/JournalPage.jsx';
-import ProjectPage    from './pages/ProjectPage.jsx';
-import AnalyticsPage  from './pages/AnalyticsPage.jsx';
-import ChatPage       from './pages/ChatPage.jsx';
-import GalleryPage    from './pages/GalleryPage.jsx';
-import VaultPage      from './pages/VaultPage.jsx';
-import TimelinePage   from './pages/TimelinePage.jsx';
-import SharedDocumentPage from './pages/SharedDocumentPage.jsx';
 import OnboardingScreen from './components/OnboardingScreen.jsx';
 import InstallBanner  from './components/InstallBanner.jsx';
 import SearchOverlay  from './components/SearchOverlay.jsx';
 import LockScreen     from './components/LockScreen.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
+const HomePage = React.lazy(() => import('./pages/HomePage.jsx'));
+const SearchPage = React.lazy(() => import('./pages/SearchPage.jsx'));
+const TodayPage = React.lazy(() => import('./pages/TodayPage.jsx'));
+const SettingsPage = React.lazy(() => import('./pages/SettingsPage.jsx'));
+const TaskPage = React.lazy(() => import('./pages/TaskPage.jsx'));
+const ExpensePage = React.lazy(() => import('./pages/ExpensePage.jsx'));
+const NotePage = React.lazy(() => import('./pages/NotePage.jsx'));
+const WorkspacesPage = React.lazy(() => import('./pages/WorkspacesPage.jsx'));
+const ReminderPage = React.lazy(() => import('./pages/ReminderPage.jsx'));
+const JournalPage = React.lazy(() => import('./pages/JournalPage.jsx'));
+const ProjectPage = React.lazy(() => import('./pages/ProjectPage.jsx'));
+const AnalyticsPage = React.lazy(() => import('./pages/AnalyticsPage.jsx'));
+const ChatPage = React.lazy(() => import('./pages/ChatPage.jsx'));
+const GalleryPage = React.lazy(() => import('./pages/GalleryPage.jsx'));
+const VaultPage = React.lazy(() => import('./pages/VaultPage.jsx'));
+const TimelinePage = React.lazy(() => import('./pages/TimelinePage.jsx'));
+const SharedDocumentPage = React.lazy(() => import('./pages/SharedDocumentPage.jsx'));
+const HabitsPage = React.lazy(() => import('./pages/HabitsPage.jsx'));
+const GoalsPage = React.lazy(() => import('./pages/GoalsPage.jsx'));
+const ContactsPage = React.lazy(() => import('./pages/ContactsPage.jsx'));
+const DocumentsPage = React.lazy(() => import('./pages/DocumentsPage.jsx'));
+const KnowledgePage = React.lazy(() => import('./pages/KnowledgePage.jsx'));
+const HealthPage = React.lazy(() => import('./pages/HealthPage.jsx'));
+const TravelPage = React.lazy(() => import('./pages/TravelPage.jsx'));
+const AssetsPage = React.lazy(() => import('./pages/AssetsPage.jsx'));
+const FinancePlanPage = React.lazy(() => import('./pages/FinancePlanPage.jsx'));
+const AutomationPage = React.lazy(() => import('./pages/AutomationPage.jsx'));
+
+const routeFallback = (
+  <div className="h-full bg-[#0b0c10] flex items-center justify-center">
+    <div className="w-8 h-8 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"/>
+  </div>
+);
 
 function AnimatedRoutes({ children }) {
   const location = useLocation();
   return (
     <div key={location.pathname} className="page-enter h-full">
-      {children}
+      <React.Suspense fallback={routeFallback}>{children}</React.Suspense>
     </div>
   );
 }
 
 function AppInner() {
+  const location = useLocation();
   const [items,      setItems]      = useState([]);
   const [isScanning, setIsScanning] = useState(false);
   const [onboarded,  setOnboarded]  = useState(() => !!localStorage.getItem('onboarded'));
@@ -56,14 +73,14 @@ function AppInner() {
     }
   }, []);
 
-  const loadItems = () => {
-    fetch(`${API}/items?workspace=${workspace}`)
+  const loadItems = useCallback(() => {
+    fetch(`${API}/items?workspace=${encodeURIComponent(workspace)}`)
       .then(res => res.json())
       .then(data => setItems(data))
       .catch(() => setItems([]));
-  };
+  }, [workspace]);
 
-  useEffect(() => { loadItems(); }, [workspace]);
+  useEffect(() => { loadItems(); }, [loadItems]);
 
   const handleFileChange = async (e) => {
     const files = e.target.files;
@@ -89,9 +106,11 @@ function AppInner() {
   if (isSharedRoute) {
     return (
       <ThemeProvider>
-        <Routes>
-          <Route path="/shared/:token" element={<SharedDocumentPage />} />
-        </Routes>
+        <React.Suspense fallback={routeFallback}>
+          <Routes>
+            <Route path="/shared/:token" element={<SharedDocumentPage />} />
+          </Routes>
+        </React.Suspense>
       </ThemeProvider>
     );
   }
@@ -122,6 +141,16 @@ function AppInner() {
           <Route path="/gallery"    element={<GalleryPage />} />
           <Route path="/vault"      element={<VaultPage workspace={workspace} />} />
           <Route path="/timeline"   element={<TimelinePage workspace={workspace} />} />
+          <Route path="/habits"     element={<HabitsPage     {...shared} />} />
+          <Route path="/goals"      element={<GoalsPage      {...shared} />} />
+          <Route path="/contacts"   element={<ContactsPage   {...shared} />} />
+          <Route path="/documents"  element={<DocumentsPage  {...shared} />} />
+          <Route path="/knowledge"  element={<KnowledgePage  {...shared} />} />
+          <Route path="/health"     element={<HealthPage     {...shared} />} />
+          <Route path="/travel"     element={<TravelPage     {...shared} />} />
+          <Route path="/assets"     element={<AssetsPage     {...shared} />} />
+          <Route path="/finance-planning" element={<FinancePlanPage {...shared} />} />
+          <Route path="/automation" element={<AutomationPage />} />
         </Routes>
       </AnimatedRoutes>
     </Layout>

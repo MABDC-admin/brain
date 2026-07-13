@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { CheckCircle2, Bell, Wallet, FileText, ChevronRight, Zap, ArrowRight } from 'lucide-react';
+import { CheckCircle2, Bell, Wallet, FileText, Zap, ArrowRight } from 'lucide-react';
 
-const CURRENCIES = ['AED', 'USD', 'EUR', 'GBP', 'SAR'];
 const FEATURES = [
   { icon: CheckCircle2, bg: 'bg-green-500',  label: '/task',     desc: 'Capture tasks in seconds' },
   { icon: Wallet,       bg: 'bg-blue-500',   label: '/expense',  desc: 'Track spending & budgets' },

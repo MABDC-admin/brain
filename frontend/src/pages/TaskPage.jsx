@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, MoreVertical, List, Calendar, FolderOpen, Filter, Trash2, X, Plus, ChevronDown, GripVertical, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, MoreVertical, List, Calendar, FolderOpen, Filter, X, Plus, ChevronDown, GripVertical, ChevronLeft, ChevronRight } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 import Confetti from '../components/Confetti.jsx';
 import UndoToast from '../components/UndoToast.jsx';
@@ -32,7 +32,7 @@ export default function TaskPage({ loadItems, workspace }) {
       .then(r => r.json())
       .then(data => setTasks(data))
       .catch(() => setTasks([]));
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { load(); }, [load, workspace]);
 

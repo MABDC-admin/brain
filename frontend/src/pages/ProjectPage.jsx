@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Plus, MoreVertical, FolderOpen, Check, Circle, ChevronRight, Trash2, X } from 'lucide-react';
+import { Plus, MoreVertical, FolderOpen, Check, Trash2, X } from 'lucide-react';
 
 const getLS = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } };
 const setLS = (k, v)   => localStorage.setItem(k, JSON.stringify(v));

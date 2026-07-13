@@ -1,11 +1,8 @@
 // Shared layout wrapper — dark phone frame with FAB command picker
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Home, Search, Plus, Calendar, Settings, X, CheckCircle2, Bell, Wallet, FileText, Camera, Images } from 'lucide-react';
+import { Home, Search, Plus, Settings, CheckCircle2, Bell, Wallet, FileText, Camera, Images } from 'lucide-react';
 import CommandPreview from './components/CommandPreview.jsx';
-import { useTheme } from './ThemeContext.jsx';
-
-const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 
 const FAB_OPTIONS = [
   { type: 'task',     label: 'Task',     icon: CheckCircle2, color: 'bg-green-500',  hint: 'Add something to do' },
@@ -15,26 +12,11 @@ const FAB_OPTIONS = [
 ];
 
 export default function Layout({ children, isScanning, fileInputRef, onFileChange, loadItems, onSearchOpen, workspace, setWorkspace }) {
-  const { dark } = useTheme();
   const navigate    = useNavigate();
   const location    = useLocation();
   const path        = location.pathname;
   const [fabOpen,   setFabOpen]   = useState(false);
   const [preview,   setPreview]   = useState(null);
-  const [counts,    setCounts]    = useState({});
-
-  // Load badge counts
-  useEffect(() => {
-    fetch(`${API}/items`)
-      .then(r => r.json())
-      .then(items => {
-        const c = {};
-        items.forEach(i => { c[i.type] = (c[i.type] || 0) + 1; });
-        setCounts(c);
-      })
-      .catch(() => {});
-  }, [path]); // refresh on navigation
-
   const navItems = [
     { icon: Home,     label: 'Home',     to: '/',        badge: null },
     { icon: Search,   label: 'Search',   to: '/search',  badge: null },

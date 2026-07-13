@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Search, FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, MoreVertical, X, Lock, Unlock, Zap, ChevronRight, MessageSquare, Mic, Share } from 'lucide-react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, X, Lock, Unlock, Zap, Mic, Share } from 'lucide-react';
 import { useHaptic } from '../hooks/useHaptic.js';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
@@ -20,16 +20,16 @@ export default function VaultPage({ workspace }) {
 
   const recognitionRef = useRef(null);
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     fetch(`${API}/items/type/vault_file?workspace=${workspace || 'Personal'}`)
       .then(r => r.json())
       .then(data => setFiles(data))
       .catch(() => setFiles([]))
       .finally(() => setLoading(false));
-  };
+  }, [workspace]);
 
-  useEffect(() => { load(); }, [workspace]);
+  useEffect(() => { load(); }, [load]);
 
   const toggleMic = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -61,7 +61,7 @@ export default function VaultPage({ workspace }) {
         try {
           const res = await fetch(`${API}/api/vault_voice`, { method: 'POST', body: formData });
           if (res.ok) load();
-        } catch(e) {
+        } catch {
           alert('Failed to save voice memo.');
         } finally {
           setUploading(false);
@@ -95,7 +95,7 @@ export default function VaultPage({ workspace }) {
       if (!res.ok) throw new Error('Upload failed');
       haptic.success();
       load();
-    } catch (err) {
+    } catch  {
       haptic.error();
       alert('Upload failed. Check backend connection.');
     } finally {

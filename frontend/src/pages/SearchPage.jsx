@@ -9,8 +9,8 @@ const RECENT_SEARCHES = ['expenses this month', 'notes about Acme', 'tax return'
 
 export default function SearchPage({ items }) {
   const location = useLocation();
-  const params   = new URLSearchParams(location.search);
-  const initial  = params.get('q') || '';
+  const searchParams = new URLSearchParams(location.search);
+  const initial  = searchParams.get('q') || '';
 
   const [query,         setQuery]         = useState(initial);
   const [activeFilters, setActiveFilters] = useState([]);
@@ -22,9 +22,11 @@ export default function SearchPage({ items }) {
       .then(r => r.json())
       .then(setAllItems)
       .catch(() => setAllItems(items || []));
-  }, []);
+  }, [items]);
 
-  useEffect(() => { setQuery(params.get('q') || ''); }, [location.search]);
+  useEffect(() => {
+    setQuery(new URLSearchParams(location.search).get('q') || '');
+  }, [location.search]);
 
   const toggleFilter = (f) => setActiveFilters(p => p.includes(f) ? p.filter(x => x !== f) : [...p, f]);
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, MoreVertical, Bell, RefreshCw, ChevronLeft, ChevronRight, X, Trash2 } from 'lucide-react';
+import { Search, MoreVertical, Bell, RefreshCw, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
@@ -35,16 +35,9 @@ export default function ReminderPage({ loadItems, workspace }) {
       .then(r => r.json())
       .then(setReminders)
       .catch(() => setReminders([]));
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { load(); }, [load, workspace]);
-
-  const deleteReminder = async (id, e) => {
-    e.stopPropagation();
-    try { await fetch(`${API}/items/${id}`, { method: 'DELETE' }); } catch {}
-    if (loadItems) loadItems();
-    setReminders(p => p.filter(r => r.id !== id));
-  };
 
   const addReminder = async () => {
     if (!form.title.trim()) return;

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Circle, Search, ChevronLeft } from 'lucide-react';
+import { Calendar, ChevronLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
@@ -45,7 +45,7 @@ export default function TimelinePage({ workspace }) {
           </div>
         ) : (
           <div className="relative border-l-2 border-[#2a2b36] ml-4 space-y-8 pb-20">
-            {items.map((item, i) => {
+            {items.map((item) => {
               const dateObj = new Date(item.created_at);
               const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
               const timeStr = dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });

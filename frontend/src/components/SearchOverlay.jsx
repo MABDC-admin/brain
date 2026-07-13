@@ -14,7 +14,6 @@ const TYPE_META = {
 export default function SearchOverlay({ onClose }) {
   const [query,   setQuery]   = useState('');
   const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [allItems, setAllItems] = useState([]);
   const inputRef  = useRef(null);
   const navigate  = useNavigate();

@@ -129,7 +129,7 @@ export default function ChatPage() {
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
             {SUGGESTIONS.map((s, i) => (
               <button key={i} onClick={() => send(s.replace(/ [^\s]+$/, '')
-                  .replace(/[💸✅📊📝🔔📉]/g, '').trim())}
+                  .replace(/[💸✅📊📝🔔📉]/gu, '').trim())}
                 className="shrink-0 text-xs px-3 py-2 rounded-full bg-[#14151b] border border-[#2a2b36] text-gray-300 hover:border-indigo-400 hover:text-white transition-colors whitespace-nowrap">
                 {s}
               </button>

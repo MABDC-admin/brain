@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2, Bell, Wallet, FileText, Sparkles, ChevronRight,
-  X, Send, TrendingUp, AlertTriangle, Clock, Zap, BarChart2, Calendar
+  X, Send, TrendingUp, AlertTriangle, Zap, BarChart2, Calendar
 } from 'lucide-react';
 import CommandPreview from '../components/CommandPreview.jsx';
 

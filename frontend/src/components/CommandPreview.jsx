@@ -140,8 +140,6 @@ export default function CommandPreview({ command, onClose, onSaved }) {
 
   const type = command?.type || 'expense';
   const rest = command?.rest || '';
-  const originalText = command?.text || '';
-
   useEffect(() => {
     if (type === 'expense')  setFields(parseExpense(rest));
     if (type === 'task')     setFields(parseTask(rest));

@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import {
-  ChevronRight, ChevronLeft, LayoutGrid, Sliders, ShieldCheck, Cloud,
-  FileText, Bell, Info, User, Check, Eye, EyeOff, Moon, Sun,
-  Globe, DollarSign, ToggleLeft, ToggleRight, Key, Cpu, Trash2,
+  ChevronRight, ChevronLeft, Sliders, ShieldCheck, Cloud,
+  Bell, Info, User, Check, Eye, EyeOff, Moon, Sun,
+  Lock, Key, Cpu, Trash2,
   Download, RefreshCw, Smartphone
 } from 'lucide-react';
-import { useTheme } from '../ThemeContext.jsx';
+import { useTheme } from '../hooks/useTheme.js';
 
 
 // ── Persistent settings via localStorage ──────────────────────────────────────
@@ -16,6 +16,7 @@ const CURRENCIES = ['AED', 'USD', 'EUR', 'GBP', 'SAR'];
 const LANGUAGES  = ['English', 'Arabic', 'French', 'Spanish'];
 const DATE_FMTS  = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'];
 const MODELS     = ['openai/gpt-4o', 'openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet'];
+const API        = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 
 // ── Reusable sub-components ───────────────────────────────────────────────────
 
@@ -24,19 +25,6 @@ function Toggle({ on, onToggle, color = 'bg-indigo-500' }) {
     <button onClick={onToggle}
       className={`w-12 h-6 rounded-full relative transition-colors duration-300 ${on ? color : 'bg-gray-600'}`}>
       <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all duration-300 ${on ? 'left-6' : 'left-0.5'}`}/>
-    </button>
-  );
-}
-
-function Row({ label, sub, right, onClick, border = true }) {
-  return (
-    <button onClick={onClick}
-      className={`w-full flex items-center px-4 py-4 hover:bg-[#1e1f28] transition-colors text-left ${border ? 'border-b border-[#2a2b36]' : ''}`}>
-      <div className="flex-1 min-w-0">
-        <p className="text-white text-[15px]">{label}</p>
-        {sub && <p className="text-gray-500 text-[12px] mt-0.5">{sub}</p>}
-      </div>
-      {right}
     </button>
   );
 }
@@ -193,8 +181,6 @@ function AiPrivacyPanel({ onBack }) {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
-
-  const masked = apiKey ? apiKey.slice(0, 8) + '••••••••••••••••' + apiKey.slice(-4) : '';
 
   return (
     <div className="flex flex-col h-full">
@@ -393,7 +379,7 @@ function DataSyncPanel({ onBack }) {
   const exportData = async (format) => {
     setExporting(true);
     try {
-      const items = await fetch('http://localhost:8001/items').then(r => r.json());
+      const items = await fetch(`${API}/items`).then(r => r.json());
       let content, filename, type;
       if (format === 'json') {
         content  = JSON.stringify(items, null, 2);
@@ -420,11 +406,20 @@ function DataSyncPanel({ onBack }) {
   };
 
   const clearData = async () => {
-    if (!window.confirm('Delete ALL items? This cannot be undone.')) return;
+    const workspace = localStorage.getItem('workspace') || 'Personal';
+    if (!window.confirm(`Delete all items in ${workspace}? This cannot be undone.`)) return;
     try {
-      const items = await fetch('http://localhost:8001/items').then(r => r.json());
-      await Promise.all(items.map(i => fetch(`http://localhost:8001/items/${i.id}`, { method: 'DELETE' })));
-      setExportDone('🗑️ All data cleared');
+      const token = getLS('clear_data_token', '') || window.prompt('Enter clear data token');
+      if (!token) return;
+      setLS('clear_data_token', token);
+      const result = await fetch(`${API}/api/items/clear-all?workspace=${encodeURIComponent(workspace)}`, {
+        method: 'DELETE',
+        headers: { 'X-Clear-Data-Token': token },
+      }).then(r => {
+        if (!r.ok) throw new Error('Clear failed');
+        return r.json();
+      });
+      setExportDone(`🗑️ ${result.deleted_count ?? 0} items deleted from ${result.workspace || workspace}`);
       setTimeout(() => window.location.reload(), 1000);
     } catch { setExportDone('❌ Clear failed'); setTimeout(() => setExportDone(''), 2000); }
   };
