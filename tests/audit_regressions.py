@@ -178,6 +178,8 @@ def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
     assert "execute_assistant_tool" in main
     assert "execute_assistant_plan" in main
     assert "assistant_reply_requires_confirmation" in main
+    assert "looks_like_compound_action_request" in main
+    assert "use_planner_first" in main
     assert "tool_name not in ASSISTANT_TOOL_NAMES" in main
     assert "step_tool not in ASSISTANT_TOOL_NAMES" in main
     assert "confidence < 0.65" in main
@@ -186,6 +188,8 @@ def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
     assert 'status="pending"' in main
     assert "confirmation_token=token" in main
     assert "For multiple actions, use steps" in main
+    assert "remaining_steps" in main
+    assert 'execute_assistant_plan({"steps": remaining_steps}' in main
 
 
 def test_task_page_supports_editing_existing_tasks() -> None:

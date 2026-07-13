@@ -363,3 +363,42 @@ def test_assistant_multi_step_plan_pauses_at_confirmation(monkeypatch):
     notes = client.get("/items/type/note", params={"workspace": "Personal"}).json()
     assert any(item["title"] == "prepare payroll note" for item in tasks)
     assert not any(item["title"] == "after email" for item in notes)
+
+
+def test_assistant_multi_step_plan_resumes_after_email_confirmation(monkeypatch):
+    sent = []
+
+    async def fake_plan(message, history):
+        return {
+            "steps": [
+                {"tool": "create_task", "arguments": {"title": "prepare visa packet", "due": "", "priority": ""}},
+                {"tool": "send_email", "arguments": {"to": "manager@example.com", "subject": "Visa packet", "body": "Visa packet is ready."}},
+                {"tool": "create_note", "arguments": {"title": "visa packet sent", "body": "Manager email confirmation completed."}},
+            ],
+            "confidence": 0.94,
+        }
+
+    def fake_send(to_email, subject, body):
+        sent.append({"to": to_email, "subject": subject, "body": body})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+    monkeypatch.setattr(main, "send_generic_email", fake_send, raising=False)
+
+    draft = chat(
+        "first create task prepare visa packet, then send email to manager@example.com "
+        "subject Visa packet body Visa packet is ready, then create note visa packet sent"
+    )
+    assert draft.status_code == 200
+    assert "Created task: prepare visa packet." in draft.json()["reply"]
+    token = draft.json()["reply"].split("confirm ", 1)[1].split("`", 1)[0]
+
+    confirm = chat(f"confirm {token}")
+    assert confirm.status_code == 200
+    reply = confirm.json()["reply"]
+    assert "Sent email to manager@example.com." in reply
+    assert "Created note: visa packet sent." in reply
+    assert sent == [{"to": "manager@example.com", "subject": "Visa packet", "body": "Visa packet is ready."}]
+
+    notes = client.get("/items/type/note", params={"workspace": "Personal"}).json()
+    assert any(item["title"] == "visa packet sent" for item in notes)

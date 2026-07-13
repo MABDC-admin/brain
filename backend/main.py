@@ -445,7 +445,15 @@ async def plan_assistant_tool_with_llm(message: str, history: list) -> Optional[
     return {"tool": tool_name, "arguments": arguments, "confidence": confidence}
 
 
-def execute_assistant_tool(tool_name: str, arguments: dict, request_text: str, db: Session, *, source: str = "llm") -> Optional[dict]:
+def execute_assistant_tool(
+    tool_name: str,
+    arguments: dict,
+    request_text: str,
+    db: Session,
+    *,
+    source: str = "llm",
+    remaining_steps: list | None = None,
+) -> Optional[dict]:
     if tool_name not in ASSISTANT_TOOL_NAMES:
         logger.warning("Rejected unapproved assistant tool: %s", tool_name)
         return None
@@ -569,7 +577,7 @@ def execute_assistant_tool(tool_name: str, arguments: dict, request_text: str, d
             target_type="email",
             summary=f"Pending email to {to_email}",
             request_text=request_text,
-            payload={"to": to_email, "subject": subject, "body": body, "source": source},
+            payload={"to": to_email, "subject": subject, "body": body, "source": source, "remaining_steps": remaining_steps or []},
             confirmation_token=token,
         )
         return {"reply": f"Confirm send email to {to_email} with subject \"{subject}\"? Reply `confirm {token}` to send."}
@@ -604,11 +612,19 @@ def execute_assistant_plan(planned_tool: dict, request_text: str, db: Session) -
         return execute_assistant_tool(tool_name, planned_tool.get("arguments", {}), request_text, db, source="llm")
 
     replies = []
-    for step in steps[:5]:
+    limited_steps = steps[:5]
+    for index, step in enumerate(limited_steps):
         if not isinstance(step, dict):
             continue
         tool_name = step.get("tool")
-        result = execute_assistant_tool(tool_name, step.get("arguments", {}), request_text, db, source="llm_plan")
+        result = execute_assistant_tool(
+            tool_name,
+            step.get("arguments", {}),
+            request_text,
+            db,
+            source="llm_plan",
+            remaining_steps=limited_steps[index + 1 :],
+        )
         if not result:
             continue
         reply = result.get("reply", "")
@@ -788,6 +804,19 @@ def is_confirmation_message(message: str) -> bool:
     return bool(confirmation_token_from_message(message))
 
 
+def looks_like_compound_action_request(message: str) -> bool:
+    text = normalize_search_text(message)
+    if not text:
+        return False
+    has_sequence = any(marker in text for marker in [" first ", " then ", " after ", " and ", " comma "])
+    action_count = sum(
+        1
+        for word in ["create", "add", "task", "remind", "reminder", "note", "expense", "rename", "delete", "send", "email", "mark"]
+        if re.search(rf"\b{word}\b", text)
+    )
+    return has_sequence and action_count >= 2
+
+
 def handle_generic_email_request(message: str, history: list, db: Session) -> Optional[dict]:
     token = confirmation_token_from_message(message)
     if token:
@@ -808,7 +837,13 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
             pending.status = "completed"
             pending.summary = f"Sent email to {payload['to']}"
             db.commit()
-            return {"reply": f"Sent email to {payload['to']}."}
+            replies = [f"Sent email to {payload['to']}."]
+            remaining_steps = payload.get("remaining_steps") if isinstance(payload.get("remaining_steps"), list) else []
+            if remaining_steps:
+                resumed = execute_assistant_plan({"steps": remaining_steps}, pending.request_text or message, db)
+                if resumed and resumed.get("reply"):
+                    replies.append(resumed["reply"])
+            return {"reply": "\n".join(replies)}
         pending.status = "failed"
         pending.summary = f"Email send failed: {detail}"
         db.commit()
@@ -1173,6 +1208,19 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     message = data.get("message", "")
     history = data.get("history", [])
 
+    if is_confirmation_message(message):
+        email_intent = handle_generic_email_request(message, history, db)
+        if email_intent:
+            return email_intent
+
+    use_planner_first = bool(OPENROUTER_API_KEY or "plan_assistant_tool_with_llm" in globals()) and looks_like_compound_action_request(message)
+    if use_planner_first:
+        planned_tool = await plan_assistant_tool_with_llm(message, history)
+        if planned_tool:
+            tool_intent = execute_assistant_plan(planned_tool, message, db)
+            if tool_intent:
+                return tool_intent
+
     email_intent = handle_generic_email_request(message, history, db)
     if email_intent:
         return email_intent
@@ -1193,7 +1241,7 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     if mail_intent:
         return mail_intent
 
-    planned_tool = await plan_assistant_tool_with_llm(message, history)
+    planned_tool = None if use_planner_first else await plan_assistant_tool_with_llm(message, history)
     if planned_tool:
         tool_intent = execute_assistant_plan(planned_tool, message, db)
         if tool_intent:
