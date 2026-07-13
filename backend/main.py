@@ -87,6 +87,16 @@ SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
 DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
 DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
 RENAME_RE = re.compile(r"\brename\b.*?\bto\s+(.+)$", re.IGNORECASE)
+CREATE_TASK_RE = re.compile(r"\b(?:create|add|new)\s+task\s+(.+)$", re.IGNORECASE)
+CREATE_NOTE_RE = re.compile(r"\b(?:create|add|new)\s+note\s+(.+)$", re.IGNORECASE)
+CREATE_EXPENSE_RE = re.compile(r"\b(?:create|add|new)\s+expense\s+(.+)$", re.IGNORECASE)
+REMINDER_RE = re.compile(r"\b(?:remind me to|create reminder to|add reminder to|schedule)\s+(.+)$", re.IGNORECASE)
+MARK_DONE_RE = re.compile(r"\b(?:mark|set|complete)\s+(.+?)\s+(?:as\s+)?(?:done|complete|completed)$", re.IGNORECASE)
+MARK_OPEN_RE = re.compile(r"\b(?:mark|set|unmark|reopen)\s+(.+?)\s+(?:as\s+)?(?:open|undone|not done|pending)$", re.IGNORECASE)
+GENERIC_EMAIL_RE = re.compile(
+    r"\b(?:send|email|mail)\s+(?:email\s+)?(?:to\s+)?(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\s+subject\s+(?P<subject>.+?)\s+body\s+(?P<body>.+)$",
+    re.IGNORECASE,
+)
 VAULT_DELETE_PHRASE = os.getenv("VAULT_DELETE_PHRASE")
 
 
@@ -122,6 +132,74 @@ def preserve_file_extension(old_title: str, new_title: str) -> str:
     if old_ext and not os.path.splitext(new_title)[1]:
         return f"{new_title.strip()}{old_ext}"
     return new_title.strip()
+
+
+def parse_item_body(item: models.Item) -> dict:
+    try:
+        parsed = json.loads(item.body or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def dump_item_body(body: dict) -> str:
+    return json.dumps(body, ensure_ascii=False)
+
+
+def parse_due_date(text: str) -> str:
+    value = normalize_search_text(text)
+    today = datetime.now().date()
+    if "tomorrow" in value:
+        return (today + timedelta(days=1)).isoformat()
+    if "today" in value:
+        return today.isoformat()
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text or "")
+    return match.group(1) if match else ""
+
+
+def parse_time(text: str) -> str:
+    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text or "")
+    if match:
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
+    am_pm = re.search(r"\b(1[0-2]|0?[1-9])\s*(am|pm)\b", text or "", re.IGNORECASE)
+    if not am_pm:
+        return ""
+    hour = int(am_pm.group(1))
+    if am_pm.group(2).lower() == "pm" and hour != 12:
+        hour += 12
+    if am_pm.group(2).lower() == "am" and hour == 12:
+        hour = 0
+    return f"{hour:02d}:00"
+
+
+def clean_action_title(text: str) -> str:
+    cleaned = re.sub(r"\b(today|tomorrow)\b", "", text or "", flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:at|on)\s+(20\d{2}-\d{2}-\d{2}|[01]?\d|2[0-3]):?[0-5]?\d?\s*(?:am|pm)?\b", "", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip(" .")
+
+
+def find_best_item(item_type: str, query: str, db: Session) -> Optional[models.Item]:
+    query_tokens = {token for token in normalize_search_text(query).split() if len(token) > 1}
+    if not query_tokens:
+        return None
+    items = db.query(models.Item).filter(models.Item.type == item_type).all()
+    best_item = None
+    best_score = 0
+    for item in items:
+        haystack = normalize_search_text(" ".join([item.title or "", item.subtitle or "", item.body or "", item.workspace or ""]))
+        score = sum(1 for token in query_tokens if token in haystack)
+        if score > best_score:
+            best_item = item
+            best_score = score
+    return best_item if best_score > 0 else None
+
+
+def create_action_item(db: Session, *, item_type: str, title: str, subtitle: str, body: str = "", workspace: str = "Personal") -> models.Item:
+    item = models.Item(type=item_type, title=title, subtitle=subtitle, body=body, workspace=workspace)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 def has_security_phrase(message: str) -> bool:
@@ -219,6 +297,90 @@ def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
         return False, "Mail delivery failed."
 
 
+def send_generic_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
+    MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
+    if not MABDC_MAIL_API_KEY:
+        return False, "Mail API key is not configured on the backend."
+
+    safe_body = html.escape(body).replace("\n", "<br/>")
+    payload = {
+        "to": to_email,
+        "from": "vault-ai@mabdc.org",
+        "subject": subject,
+        "html": f"""
+        <div style="font-family: sans-serif; color: #333;">
+            <p>{safe_body}</p>
+            <br/>
+            <p>Command Brain AI</p>
+        </div>
+        """,
+    }
+    try:
+        resp = httpx.post(
+            "https://api-mail.mabdc.com/v1/emails",
+            headers={"Authorization": f"Bearer {MABDC_MAIL_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code in [200, 202]:
+            return True, "sent"
+        logger.warning("Generic email API failed: %s %s", resp.status_code, resp.text)
+        return False, f"Mail API returned {resp.status_code}."
+    except Exception as exc:
+        logger.exception("Generic email failed: %s", exc)
+        return False, "Mail delivery failed."
+
+
+def parse_generic_email(message: str) -> Optional[dict]:
+    match = GENERIC_EMAIL_RE.search(message or "")
+    if not match:
+        return None
+    return {
+        "to": match.group("email"),
+        "subject": match.group("subject").strip(),
+        "body": match.group("body").strip(),
+    }
+
+
+def pending_generic_email(history: list) -> Optional[dict]:
+    if not any(
+        isinstance(h, dict)
+        and h.get("role") == "assistant"
+        and "Confirm send" in (h.get("content") or "")
+        for h in history[-4:]
+    ):
+        return None
+    for h in reversed(history[-8:]):
+        if isinstance(h, dict) and h.get("role") == "user":
+            parsed = parse_generic_email(h.get("content", ""))
+            if parsed:
+                return parsed
+    return None
+
+
+def is_confirmation_message(message: str) -> bool:
+    return normalize_search_text(message) in {"confirm", "yes", "send", "send it", "approve", "approved"}
+
+
+def handle_generic_email_request(message: str, history: list) -> Optional[dict]:
+    pending = pending_generic_email(history)
+    if pending and is_confirmation_message(message):
+        ok, detail = send_generic_email(pending["to"], pending["subject"], pending["body"])
+        if ok:
+            return {"reply": f"Sent email to {pending['to']}."}
+        return {"reply": f"I could not send the email: {detail}"}
+
+    parsed = parse_generic_email(message)
+    if not parsed:
+        return None
+    return {
+        "reply": (
+            f"Confirm send email to {parsed['to']} with subject \"{parsed['subject']}\"? "
+            "Reply `confirm` to send."
+        )
+    }
+
+
 def handle_document_email_request(message: str, history: list, db: Session) -> Optional[dict]:
     email_match = EMAIL_RE.search(message or "")
     if not email_match or not SEND_WORD_RE.search(message or ""):
@@ -263,6 +425,79 @@ def handle_document_rename_request(message: str, history: list, db: Session) -> 
     doc.title = preserve_file_extension(old_title, new_title)
     db.commit()
     return {"reply": f"Renamed {old_title} to {doc.title}."}
+
+
+def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
+    task_match = CREATE_TASK_RE.search(message or "")
+    if task_match:
+        raw_title = task_match.group(1).strip()
+        due = parse_due_date(raw_title)
+        title = clean_action_title(raw_title)
+        if not title:
+            return {"reply": "Tell me the task title after `create task`."}
+        subtitle = f"Task • Due {due}" if due else "Task • No due date"
+        body = dump_item_body({"subtasks": [], "priority": "", "due": due, "status": "open"})
+        item = create_action_item(db, item_type="task", title=title, subtitle=subtitle, body=body)
+        return {"reply": f"Created task: {item.title}."}
+
+    note_match = CREATE_NOTE_RE.search(message or "")
+    if note_match:
+        raw_note = note_match.group(1).strip()
+        if ":" in raw_note:
+            title, body = [part.strip() for part in raw_note.split(":", 1)]
+        else:
+            title, body = raw_note[:60].strip(), raw_note
+        if not title:
+            return {"reply": "Tell me the note title after `create note`."}
+        item = create_action_item(db, item_type="note", title=title, subtitle="Note • Today", body=body)
+        return {"reply": f"Created note: {item.title}."}
+
+    expense_match = CREATE_EXPENSE_RE.search(message or "")
+    if expense_match:
+        raw_expense = expense_match.group(1).strip()
+        amount_match = re.search(r"\b(\d+(?:\.\d{1,2})?)\s*(AED|USD|EUR|PHP)?\b", raw_expense, re.IGNORECASE)
+        if not amount_match:
+            return {"reply": "Tell me the expense amount, for example: create expense 42 AED lunch."}
+        amount = f"{float(amount_match.group(1)):.2f}"
+        currency = (amount_match.group(2) or "AED").upper()
+        item_name = clean_action_title(raw_expense.replace(amount_match.group(0), "", 1)) or "Expense"
+        title = f"{amount} {currency} {item_name}"
+        body = dump_item_body({"amount": amount, "currency": currency, "item": item_name, "date": parse_due_date(raw_expense)})
+        item = create_action_item(db, item_type="expense", title=title, subtitle="Other • Today", body=body)
+        return {"reply": f"Created expense: {item.title}."}
+
+    reminder_match = REMINDER_RE.search(message or "")
+    if reminder_match:
+        raw_title = reminder_match.group(1).strip()
+        date = parse_due_date(raw_title)
+        time_value = parse_time(raw_title)
+        title = clean_action_title(raw_title)
+        if not title:
+            return {"reply": "Tell me what to remind you about."}
+        repeat_part = "Once"
+        time_part = f" at {time_value}" if time_value else ""
+        subtitle = f"Reminder • {repeat_part}{time_part}"
+        body = dump_item_body({"date": date, "time": time_value, "repeat": repeat_part, "status": "open"})
+        item = create_action_item(db, item_type="reminder", title=title, subtitle=subtitle, body=body)
+        return {"reply": f"Created reminder: {item.title}."}
+
+    done_match = MARK_DONE_RE.search(message or "")
+    open_match = MARK_OPEN_RE.search(message or "")
+    if done_match or open_match:
+        target_query = (done_match or open_match).group(1).strip()
+        task = find_best_item("task", target_query, db)
+        if not task:
+            return {"reply": f"I could not find a task matching `{target_query}`."}
+        body = parse_item_body(task)
+        status = "done" if done_match else "open"
+        body["status"] = status
+        task.body = dump_item_body(body)
+        task.subtitle = re.sub(r"\s•\s(?:Done|Open)$", "", task.subtitle or "")
+        task.subtitle = f"{task.subtitle or 'Task'} • {'Done' if status == 'done' else 'Open'}"
+        db.commit()
+        return {"reply": f"Marked task {status}: {task.title}."}
+
+    return None
 
 
 def pending_delete_query(history: list) -> str:
@@ -464,11 +699,17 @@ async def scan_files(files: List[UploadFile] = File(...), db: Session = Depends(
 @app.post("/api/chat")
 async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     from fastapi import Request as _R
-    if not OPENROUTER_API_KEY:
-        return {"reply": "⚠️ No API key. Go to Settings → AI & Privacy to add your OpenRouter key."}
     data    = await request.json()
     message = data.get("message", "")
     history = data.get("history", [])
+
+    email_intent = handle_generic_email_request(message, history)
+    if email_intent:
+        return email_intent
+
+    crud_intent = handle_assistant_crud_request(message, db)
+    if crud_intent:
+        return crud_intent
 
     delete_intent = handle_document_delete_request(message, history, db)
     if delete_intent:
@@ -481,6 +722,9 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     mail_intent = handle_document_email_request(message, history, db)
     if mail_intent:
         return mail_intent
+
+    if not OPENROUTER_API_KEY:
+        return {"reply": "⚠️ No API key. Go to Settings → AI & Privacy to add your OpenRouter key."}
 
     items = db.query(models.Item).order_by(models.Item.created_at.desc()).limit(80).all()
     by_type = {}

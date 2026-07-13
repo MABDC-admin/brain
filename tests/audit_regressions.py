@@ -179,6 +179,14 @@ def test_task_page_supports_editing_existing_tasks() -> None:
     assert "method: targetTask ? 'PUT' : 'POST'" in task_page
 
 
+def test_task_done_status_is_persisted() -> None:
+    task_page = read("frontend/src/pages/TaskPage.jsx")
+    assert "meta.status === 'done'" in task_page
+    assert "persistTaskStatus" in task_page
+    assert "status: nextDone ? 'done' : 'open'" in task_page
+    assert "method: 'PATCH'" in task_page
+
+
 def test_mobile_layout_removes_desktop_phone_frame() -> None:
     layout = read("frontend/src/Layout.jsx")
     css = read("frontend/src/index.css")
@@ -380,6 +388,7 @@ if __name__ == "__main__":
         test_app_uses_router_location_for_shared_routes,
         test_backend_smoke_uses_isolated_database,
         test_task_page_supports_editing_existing_tasks,
+        test_task_done_status_is_persisted,
         test_mobile_layout_removes_desktop_phone_frame,
         test_workspace_selector_is_clickable_on_touch_devices,
         test_workspace_queries_are_url_encoded,

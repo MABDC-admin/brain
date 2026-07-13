@@ -20,10 +20,11 @@ function parseTaskBody(task) {
         subtasks: Array.isArray(parsed.subtasks) ? parsed.subtasks : [],
         priority: parsed.priority || task.priority || '',
         due: parsed.due || '',
+        status: parsed.status || 'open',
       };
     }
   } catch {}
-  return { subtasks: [], priority: task.priority || '', due: '' };
+  return { subtasks: [], priority: task.priority || '', due: '', status: 'open' };
 }
 
 function dueSubtitle(due) {
@@ -53,16 +54,42 @@ export default function TaskPage({ loadItems, workspace }) {
   const load = useCallback(() => {
     fetch(`${API}/items/type/task?workspace=${encodeURIComponent(workspace || 'Personal')}`)
       .then(r => r.json())
-      .then(data => setTasks(data))
+      .then(data => {
+        setTasks(data);
+        setDone(data.filter(task => {
+          const meta = parseTaskBody(task);
+          return meta.status === 'done';
+        }).map(task => task.id));
+      })
       .catch(() => setTasks([]));
   }, [workspace]);
 
   useEffect(() => { load(); }, [load, workspace]);
 
+  const persistTaskStatus = async (task, nextDone) => {
+    const meta = parseTaskBody(task);
+    const body = {
+      type: 'task',
+      title: task.title,
+      subtitle: task.subtitle,
+      workspace: task.workspace || workspace || 'Personal',
+      body: JSON.stringify({ ...meta, status: nextDone ? 'done' : 'open' }),
+    };
+    try {
+      await fetch(`${API}/items/${task.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {}
+  };
+
   const toggle = (id, e) => {
+    const task = tasks.find(t => t.id === id);
+    const nextDone = !done.includes(id);
     const rect = e?.currentTarget?.getBoundingClientRect();
     const parentRect = e?.currentTarget?.closest('.task-list-container')?.getBoundingClientRect();
-    if (!done.includes(id)) {
+    if (nextDone) {
       haptic.success();
       if (rect && parentRect) {
         setConfetti({ x: rect.left - parentRect.left + rect.width / 2, y: rect.top - parentRect.top + rect.height / 2 });
@@ -71,7 +98,8 @@ export default function TaskPage({ loadItems, workspace }) {
     } else {
       haptic.tap();
     }
-    setDone(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+    setDone(p => nextDone ? [...p, id] : p.filter(x => x !== id));
+    if (task) persistTaskStatus(task, nextDone);
   };
 
   const deleteTask = async (id) => {
@@ -90,7 +118,12 @@ export default function TaskPage({ loadItems, workspace }) {
   // Multi-select
   const startSelect   = (id) => { haptic.success(); setSelecting(true); setSelected([id]); };
   const toggleSelect  = (id) => setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
-  const markBulkDone  = () => { setDone(p => [...new Set([...p, ...selected])]); haptic.success(); setSelecting(false); setSelected([]); };
+  const markBulkDone  = () => {
+    const selectedTasks = tasks.filter(task => selected.includes(task.id));
+    setDone(p => [...new Set([...p, ...selected])]);
+    selectedTasks.forEach(task => persistTaskStatus(task, true));
+    haptic.success(); setSelecting(false); setSelected([]);
+  };
   const deleteBulk    = () => {
     confirmDelete({
       title: 'Delete selected tasks?',
@@ -158,7 +191,7 @@ export default function TaskPage({ loadItems, workspace }) {
       title: form.title.trim(),
       subtitle,
       workspace: workspace || 'Personal',
-      body: JSON.stringify({ subtasks, priority: form.priority || '', due: form.due || '' }),
+      body: JSON.stringify({ subtasks, priority: form.priority || '', due: form.due || '', status: targetTask && done.includes(targetTask.id) ? 'done' : 'open' }),
     };
     try {
       await fetch(targetTask ? `${API}/items/${targetTask.id}` : `${API}/items`, {
