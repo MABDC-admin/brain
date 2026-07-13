@@ -83,6 +83,27 @@ def test_static_uploads_are_private_and_backups_are_scheduled() -> None:
     assert "/api/shared/${token}/file" in shared_page
 
 
+def test_phase_two_audit_pages_and_endpoints_are_registered() -> None:
+    backend = read("backend/main.py")
+    app = read("frontend/src/App.jsx")
+    settings = read("frontend/src/pages/SettingsPage.jsx")
+    action_page = read("frontend/src/pages/ActionHistoryPage.jsx")
+    email_page = read("frontend/src/pages/EmailAuditPage.jsx")
+    assert "@app.get(\"/api/email/audit\")" in backend
+    assert "@app.post(\"/api/email/audit/{audit_id}/resend\")" in backend
+    assert "request_text" in backend
+    assert "payload" in backend
+    assert "ActionHistoryPage" in app
+    assert 'path="/action-history"' in app
+    assert "EmailAuditPage" in app
+    assert 'path="/email-audit"' in app
+    assert "AI Action History" in settings
+    assert "Sent Email Log" in settings
+    assert "/api/assistant/audit?limit=100" in action_page
+    assert "/api/email/audit?limit=100" in email_page
+    assert "/api/email/audit/${id}/resend" in email_page
+
+
 def test_frontend_has_no_development_console_log() -> None:
     assert_absent("frontend/src/main.jsx", "console.log")
 

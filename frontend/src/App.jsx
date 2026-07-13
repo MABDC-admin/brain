@@ -36,6 +36,8 @@ const TravelPage = React.lazy(() => import('./pages/TravelPage.jsx'));
 const AssetsPage = React.lazy(() => import('./pages/AssetsPage.jsx'));
 const FinancePlanPage = React.lazy(() => import('./pages/FinancePlanPage.jsx'));
 const AutomationPage = React.lazy(() => import('./pages/AutomationPage.jsx'));
+const ActionHistoryPage = React.lazy(() => import('./pages/ActionHistoryPage.jsx'));
+const EmailAuditPage = React.lazy(() => import('./pages/EmailAuditPage.jsx'));
 
 const routeFallback = (
   <div className="h-full bg-[#0b0c10] flex items-center justify-center">
@@ -239,6 +241,8 @@ function AppInner() {
           <Route path="/assets"     element={<AssetsPage     {...shared} />} />
           <Route path="/finance-planning" element={<FinancePlanPage {...shared} />} />
           <Route path="/automation" element={<AutomationPage />} />
+          <Route path="/action-history" element={<ActionHistoryPage />} />
+          <Route path="/email-audit" element={<EmailAuditPage />} />
         </Routes>
       </AnimatedRoutes>
     </Layout>

@@ -585,6 +585,7 @@ def audit_action(
 
 
 def audit_to_dict(row: models.AssistantAudit) -> dict:
+    payload = parse_json_object(row.payload or "{}") or {}
     return {
         "id": row.id,
         "action": row.action,
@@ -593,7 +594,23 @@ def audit_to_dict(row: models.AssistantAudit) -> dict:
         "target_type": row.target_type,
         "target_id": row.target_id,
         "summary": row.summary,
+        "request_text": row.request_text,
+        "payload": payload,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def email_audit_to_dict(row: models.AssistantAudit) -> dict:
+    payload = parse_json_object(row.payload or "{}") or {}
+    return {
+        **audit_to_dict(row),
+        "to": payload.get("to", ""),
+        "subject": payload.get("subject") or payload.get("document_title") or "",
+        "body": payload.get("body", ""),
+        "document_id": payload.get("document_id"),
+        "document_title": payload.get("document_title", ""),
+        "delivery_detail": payload.get("delivery_detail") or row.summary or "",
+        "can_resend": row.status == "completed" and row.action in {"send_email", "send_vault_document_email", "resend_email"},
     }
 
 
@@ -940,6 +957,57 @@ def read_assistant_audit(limit: int = 50, db: Session = Depends(get_db)):
     return [audit_to_dict(row) for row in rows]
 
 
+@app.get("/api/email/audit")
+def read_email_audit(limit: int = 50, db: Session = Depends(get_db)):
+    rows = (
+        db.query(models.AssistantAudit)
+        .filter(models.AssistantAudit.action.in_(["send_email", "send_vault_document_email", "resend_email"]))
+        .order_by(models.AssistantAudit.created_at.desc())
+        .limit(min(max(limit, 1), 200))
+        .all()
+    )
+    return [email_audit_to_dict(row) for row in rows]
+
+
+@app.post("/api/email/audit/{audit_id}/resend")
+def resend_email_from_audit(audit_id: int, db: Session = Depends(get_db)):
+    row = db.query(models.AssistantAudit).filter(models.AssistantAudit.id == audit_id).first()
+    if not row or row.action not in {"send_email", "send_vault_document_email", "resend_email"}:
+        raise HTTPException(status_code=404, detail="Email audit entry not found")
+    payload = parse_json_object(row.payload or "{}") or {}
+
+    if row.action == "send_vault_document_email":
+        doc = db.query(models.Item).filter(models.Item.id == payload.get("document_id"), models.Item.type == "vault_file").first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Vault document no longer exists")
+        ok, detail = send_document_email(str(payload.get("to") or ""), doc)
+        resend_payload = {**payload, "delivery_detail": detail, "source_audit_id": audit_id}
+        summary = f"Resent {doc.title} to {payload.get('to', 'recipient')}" if ok else f"Resend failed: {detail}"
+        target_type = "vault_file"
+        target_id = doc.id
+    else:
+        ok, detail = send_generic_email(str(payload.get("to") or ""), str(payload.get("subject") or ""), str(payload.get("body") or ""))
+        resend_payload = {**payload, "delivery_detail": detail, "source_audit_id": audit_id}
+        summary = f"Resent email to {payload.get('to', 'recipient')}" if ok else f"Resend failed: {detail}"
+        target_type = "email"
+        target_id = None
+
+    audit_action(
+        db,
+        action="resend_email",
+        risk_level=3,
+        status="completed" if ok else "failed",
+        target_type=target_type,
+        target_id=target_id,
+        summary=summary,
+        request_text=f"resend audit {audit_id}",
+        payload=resend_payload,
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=detail)
+    return {"ok": True, "detail": detail}
+
+
 def has_security_phrase(message: str) -> bool:
     if not VAULT_DELETE_PHRASE:
         return False
@@ -1217,6 +1285,8 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
                 db.commit()
                 return {"reply": "I could not send it because the vault document no longer exists."}
             ok, detail = send_document_email(payload["to"], doc)
+            payload["delivery_detail"] = detail
+            pending.payload = json.dumps(payload, ensure_ascii=False)
             if ok:
                 pending.status = "completed"
                 pending.summary = f"Sent {doc.title} to {payload['to']}"
@@ -1234,6 +1304,8 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
             return {"reply": f"I could not send the vault document: {detail}"}
 
         ok, detail = send_generic_email(payload["to"], payload["subject"], payload["body"])
+        payload["delivery_detail"] = detail
+        pending.payload = json.dumps(payload, ensure_ascii=False)
         if ok:
             pending.status = "completed"
             pending.summary = f"Sent email to {payload['to']}"

@@ -205,6 +205,70 @@ def test_daily_backup_copies_database_and_uploads_archive(monkeypatch, tmp_path)
     assert _Path(result["uploads_backup"]).name.startswith("uploads-20260713-020000")
 
 
+def test_assistant_audit_endpoint_includes_payload_and_request_text():
+    db = TestingSessionLocal()
+    try:
+        row = main.audit_action(
+            db,
+            action="create_task",
+            risk_level=1,
+            status="completed",
+            target_type="task",
+            summary="Created task payroll",
+            request_text="create task payroll",
+            payload={"title": "payroll"},
+        )
+    finally:
+        db.close()
+
+    response = client.get("/api/assistant/audit", params={"limit": 5})
+    assert response.status_code == 200
+    audit = next(item for item in response.json() if item["id"] == row.id)
+    assert audit["request_text"] == "create task payroll"
+    assert audit["payload"] == {"title": "payroll"}
+
+
+def test_email_audit_lists_sent_email_and_resends(monkeypatch):
+    sent = []
+
+    def fake_send(to_email, subject, body):
+        sent.append({"to": to_email, "subject": subject, "body": body})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "send_generic_email", fake_send, raising=False)
+
+    db = TestingSessionLocal()
+    try:
+        row = main.audit_action(
+            db,
+            action="send_email",
+            risk_level=3,
+            status="completed",
+            target_type="email",
+            summary="Sent email to audit@example.com",
+            request_text="send email",
+            payload={"to": "audit@example.com", "subject": "Audit", "body": "Hello", "delivery_detail": "sent"},
+        )
+    finally:
+        db.close()
+
+    listing = client.get("/api/email/audit")
+    assert listing.status_code == 200
+    email_row = next(item for item in listing.json() if item["id"] == row.id)
+    assert email_row["to"] == "audit@example.com"
+    assert email_row["subject"] == "Audit"
+    assert email_row["delivery_detail"] == "sent"
+    assert email_row["can_resend"] is True
+
+    resend = client.post(f"/api/email/audit/{row.id}/resend")
+    assert resend.status_code == 200
+    assert resend.json()["ok"] is True
+    assert sent == [{"to": "audit@example.com", "subject": "Audit", "body": "Hello"}]
+
+    refreshed = client.get("/api/email/audit").json()
+    assert any(item["action"] == "resend_email" and item["to"] == "audit@example.com" for item in refreshed)
+
+
 def test_assistant_creates_task_note_expense_and_reminder():
     task = chat("create task call HR tomorrow")
     assert task.status_code == 200

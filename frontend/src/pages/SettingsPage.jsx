@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight, ChevronLeft, Sliders, ShieldCheck, Cloud,
   Bell, Info, User, Check, Eye, EyeOff, Moon, Sun,
   Lock, Key, Cpu, Trash2,
-  Download, RefreshCw, Smartphone, LogOut
+  Download, RefreshCw, Smartphone, LogOut, Activity, MailCheck
 } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme.js';
 import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
@@ -504,7 +505,13 @@ const MENU_ITEMS = [
   { key: 'about',        icon: Info,        label: 'About Command Brain',  sub: 'v1.0.0' },
 ];
 
+const AUDIT_LINKS = [
+  { to: '/action-history', icon: Activity, label: 'AI Action History', sub: 'Commands, approvals, OCR, sends' },
+  { to: '/email-audit', icon: MailCheck, label: 'Sent Email Log', sub: 'Delivery history and resend' },
+];
+
 export default function SettingsPage() {
+  const navigate = useNavigate();
   const [panel, setPanel] = useState(null);
   const name  = getLS('profile_name',  'Ali Hassan');
   const email = getLS('profile_email', 'ali@example.com');
@@ -548,6 +555,19 @@ export default function SettingsPage() {
           {MENU_ITEMS.map(({ key, icon: Icon, label, sub }, i) => (
             <button key={key} onClick={() => setPanel(key)}
               className={`w-full flex items-center px-4 py-4 hover:bg-[#1e1f28] transition-colors text-left ${i < MENU_ITEMS.length - 1 ? 'border-b border-[#2a2b36]' : ''}`}>
+              <Icon className="w-5 h-5 text-gray-400 mr-4 shrink-0"/>
+              <div className="flex-1">
+                <p className="text-white text-[15px]">{label}</p>
+                <p className="text-gray-500 text-[12px] mt-0.5">{sub}</p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-500"/>
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 bg-[#14151b] rounded-2xl border border-[#2a2b36] overflow-hidden">
+          {AUDIT_LINKS.map(({ to, icon: Icon, label, sub }, i) => (
+            <button key={to} onClick={() => navigate(to)}
+              className={`w-full flex items-center px-4 py-4 hover:bg-[#1e1f28] transition-colors text-left ${i < AUDIT_LINKS.length - 1 ? 'border-b border-[#2a2b36]' : ''}`}>
               <Icon className="w-5 h-5 text-gray-400 mr-4 shrink-0"/>
               <div className="flex-1">
                 <p className="text-white text-[15px]">{label}</p>
