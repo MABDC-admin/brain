@@ -171,6 +171,14 @@ def test_backend_smoke_uses_isolated_database() -> None:
     assert 'os.getenv("SQLALCHEMY_DATABASE_URL"' in database
 
 
+def test_task_page_supports_editing_existing_tasks() -> None:
+    task_page = read("frontend/src/pages/TaskPage.jsx")
+    assert "editingTask" in task_page
+    assert "openTaskEditor" in task_page
+    assert "Pencil" in task_page
+    assert "method: targetTask ? 'PUT' : 'POST'" in task_page
+
+
 if __name__ == "__main__":
     tests = [
         test_no_hardcoded_localhost_api_urls,
@@ -191,6 +199,7 @@ if __name__ == "__main__":
         test_item_updates_accept_patch_and_put,
         test_app_uses_router_location_for_shared_routes,
         test_backend_smoke_uses_isolated_database,
+        test_task_page_supports_editing_existing_tasks,
     ]
 
     failures = []

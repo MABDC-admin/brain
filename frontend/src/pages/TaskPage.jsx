@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, MoreVertical, List, Calendar, FolderOpen, Filter, X, Plus, ChevronDown, GripVertical, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, MoreVertical, List, Calendar, FolderOpen, Filter, X, Plus, ChevronDown, GripVertical, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 import Confetti from '../components/Confetti.jsx';
 import UndoToast from '../components/UndoToast.jsx';
@@ -8,12 +8,33 @@ import { useHaptic } from '../hooks/useHaptic.js';
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const PRIORITY_COLOR = { High: 'text-red-500', Medium: 'text-orange-400', Low: 'text-blue-400' };
 const TABS = ['OPEN', 'TODAY', 'OVERDUE', 'DONE'];
+const EMPTY_FORM = { title: '', due: '', priority: '', subtasks: [''] };
+
+function parseTaskBody(task) {
+  try {
+    const parsed = JSON.parse(task.body || '');
+    if (Array.isArray(parsed)) return { subtasks: parsed, priority: task.priority || '', due: '' };
+    if (parsed && typeof parsed === 'object') {
+      return {
+        subtasks: Array.isArray(parsed.subtasks) ? parsed.subtasks : [],
+        priority: parsed.priority || task.priority || '',
+        due: parsed.due || '',
+      };
+    }
+  } catch {}
+  return { subtasks: [], priority: task.priority || '', due: '' };
+}
+
+function dueSubtitle(due) {
+  return due ? `Due ${new Date(due).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}` : 'No due date';
+}
 
 export default function TaskPage({ loadItems, workspace }) {
   const [tab,       setTab]      = useState('OPEN');
   const [tasks,     setTasks]    = useState([]);
   const [showAdd,   setShowAdd]  = useState(false);
-  const [form,      setForm]     = useState({ title: '', due: '', priority: '', subtasks: [''] });
+  const [editingTask, setEditingTask] = useState(null);
+  const [form,      setForm]     = useState(EMPTY_FORM);
   const [saving,    setSaving]   = useState(false);
   const [done,      setDone]     = useState([]);
   const [confetti,  setConfetti] = useState(null); // { x, y }
@@ -91,19 +112,52 @@ export default function TaskPage({ loadItems, workspace }) {
     haptic.tap();
   };
 
-  const addTask = async () => {
+  const closeTaskSheet = () => {
+    setShowAdd(false);
+    setEditingTask(null);
+    setForm(EMPTY_FORM);
+  };
+
+  const openNewTask = () => {
+    setEditingTask(null);
+    setForm(EMPTY_FORM);
+    setShowAdd(true);
+  };
+
+  const openTaskEditor = (task, event) => {
+    event?.stopPropagation();
+    const meta = parseTaskBody(task);
+    setEditingTask(task);
+    setForm({
+      title: task.title || '',
+      due: meta.due || '',
+      priority: meta.priority || '',
+      subtasks: meta.subtasks.length ? meta.subtasks : [''],
+    });
+    setShowAdd(true);
+  };
+
+  const saveTask = async () => {
     if (!form.title.trim()) return;
     setSaving(true);
-    // Close immediately — optimistic UX
-    setShowAdd(false);
-    setForm({ title: '', due: '', priority: '', subtasks: [''] });
-    const dueStr   = form.due ? `Due ${new Date(form.due).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}` : 'No due date';
+    const targetTask = editingTask;
+    closeTaskSheet();
+    const dueStr   = dueSubtitle(form.due);
     const subtitle = `Task • ${dueStr}`;
     const subtasks = form.subtasks.filter(s => s.trim());
-    const body = { type: 'task', title: form.title, subtitle, priority: form.priority || null, workspace: workspace || 'Personal' };
-    if (subtasks.length) body.body = JSON.stringify(subtasks);
+    const body = {
+      type: 'task',
+      title: form.title.trim(),
+      subtitle,
+      workspace: workspace || 'Personal',
+      body: JSON.stringify({ subtasks, priority: form.priority || '', due: form.due || '' }),
+    };
     try {
-      await fetch(`${API}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      await fetch(targetTask ? `${API}/items/${targetTask.id}` : `${API}/items`, {
+        method: targetTask ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     } catch {}
     load();
     if (loadItems) loadItems();
@@ -137,9 +191,7 @@ export default function TaskPage({ loadItems, workspace }) {
     return true;
   });
 
-  const parseSubtasks = (t) => {
-    try { const p = JSON.parse(t.body || ''); return Array.isArray(p) ? p : []; } catch { return []; }
-  };
+  const parseSubtasks = (t) => parseTaskBody(t).subtasks;
   const [subDone, setSubDone] = useState({});
 
   return (
@@ -262,7 +314,11 @@ export default function TaskPage({ loadItems, workspace }) {
                     <p className="text-gray-400 text-[12px]">{t.subtitle}</p>
                   </div>
                   <div className="flex items-center gap-2 ml-2 pr-1">
-                    {t.priority && <span className={`text-[11px] font-bold ${PRIORITY_COLOR[t.priority]}`}>● {t.priority}</span>}
+                    {parseTaskBody(t).priority && <span className={`text-[11px] font-bold ${PRIORITY_COLOR[parseTaskBody(t).priority]}`}>● {parseTaskBody(t).priority}</span>}
+                    <button onClick={e => openTaskEditor(t, e)}
+                      className="text-gray-400 hover:text-green-600 transition-colors" aria-label={`Edit ${t.title}`}>
+                      <Pencil className="w-4 h-4"/>
+                    </button>
                     {subs.length > 0 && (
                       <button onClick={e => { e.stopPropagation(); setExpanded(p => p === t.id ? null : t.id); }}
                         className="text-gray-400 hover:text-black transition-colors">
@@ -293,7 +349,7 @@ export default function TaskPage({ loadItems, workspace }) {
       </div>
 
       <div className="p-6 pt-4 shrink-0">
-        <button onClick={() => setShowAdd(true)} className="w-full py-4 rounded-full bg-green-500 hover:bg-green-400 transition-colors font-semibold text-white flex items-center justify-center gap-2">
+        <button onClick={openNewTask} className="w-full py-4 rounded-full bg-green-500 hover:bg-green-400 transition-colors font-semibold text-white flex items-center justify-center gap-2">
           <Plus className="w-5 h-5"/> Add Task
         </button>
         <div className="flex justify-around mt-4">
@@ -306,11 +362,11 @@ export default function TaskPage({ loadItems, workspace }) {
       </div>
 
       {showAdd && (
-        <div className="absolute inset-0 z-50 bg-black/60 flex items-end justify-center" onClick={() => setShowAdd(false)}>
+        <div className="absolute inset-0 z-50 bg-black/60 flex items-end justify-center" onClick={closeTaskSheet}>
           <div className="bg-white rounded-t-3xl w-full p-6" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-black">Add Task</h3>
-              <button onClick={() => setShowAdd(false)}><X className="w-5 h-5 text-gray-400"/></button>
+              <h3 className="text-lg font-bold text-black">{editingTask ? 'Edit Task' : 'Add Task'}</h3>
+              <button onClick={closeTaskSheet}><X className="w-5 h-5 text-gray-400"/></button>
             </div>
             <div className="space-y-3 max-h-[65vh] overflow-y-auto scrollbar-hide pr-1">
               <input value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))}
@@ -350,9 +406,9 @@ export default function TaskPage({ loadItems, workspace }) {
                 <button onClick={() => setForm(f => ({ ...f, subtasks: [...f.subtasks, ''] }))}
                   className="text-xs text-green-600 font-medium hover:text-green-500">+ Add subtask</button>
               </div>
-              <button onClick={addTask} disabled={saving || !form.title.trim()}
+              <button onClick={saveTask} disabled={saving || !form.title.trim()}
                 className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 disabled:opacity-40 text-white font-semibold">
-                {saving ? 'Saving…' : 'Save Task'}
+                {saving ? 'Saving…' : editingTask ? 'Update Task' : 'Save Task'}
               </button>
             </div>
           </div>
