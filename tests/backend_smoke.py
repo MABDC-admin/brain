@@ -618,3 +618,124 @@ def test_vault_scan_success_status_records_attempt_count():
     assert extracted["scan_attempts"] == 1
     assert extracted["scan_error"] == ""
     assert extracted["document_title"] == "Dennis Contract"
+
+
+def test_assistant_ocr_retries_recent_vault_document(monkeypatch):
+    os.makedirs(ROOT / "uploads", exist_ok=True)
+    upload_path = ROOT / "uploads" / "dennis-passport.pdf"
+    upload_path.write_bytes(b"%PDF-1.4 test")
+
+    async def fake_vision(prompt, vision_images, mime_type, max_attempts=2):
+        return (
+            '{"document_title":"Dennis Passport","category":"Passport","expiry_date":"2030-01-31","summary":"Passport scan","full_text":"Passport holder Dennis"}',
+            1,
+            "",
+        )
+
+    monkeypatch.setattr(main, "extract_pdf_text", lambda contents: "Old embedded passport text", raising=False)
+    monkeypatch.setattr(main, "render_pdf_pages_for_vision", lambda contents: ["image-b64"], raising=False)
+    monkeypatch.setattr(main, "request_vault_vision_extraction", fake_vision, raising=False)
+
+    created = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "Dennis-Passport.pdf",
+            "subtitle": "Document • Fallback OCR",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/dennis-passport.pdf",
+            "body": '{"scan_status":"fallback","full_text":"old text"}',
+        },
+    )
+    assert created.status_code == 200
+    item_id = created.json()["id"]
+
+    response = chat(
+        "ocr",
+        [
+            {"role": "user", "content": "find dennis-passport.pdf"},
+            {"role": "assistant", "content": 'I found "Dennis-Passport.pdf" in your vault files.'},
+        ],
+    )
+    assert response.status_code == 200
+    assert "OCR updated Dennis Passport.pdf" in response.json()["reply"]
+
+    item = client.get("/items/type/vault_file", params={"workspace": "Personal"}).json()
+    item = next(row for row in item if row["id"] == item_id)
+    assert item["title"] == "Dennis Passport.pdf"
+    assert "Passport holder Dennis" in item["body"]
+    assert '"scan_status": "success"' in item["body"]
+
+
+def test_assistant_ocr_does_not_fallback_to_wrong_recent_title(monkeypatch):
+    called = False
+
+    async def fake_vision(prompt, vision_images, mime_type, max_attempts=2):
+        nonlocal called
+        called = True
+        return "", 0, ""
+
+    monkeypatch.setattr(main, "request_vault_vision_extraction", fake_vision, raising=False)
+    created = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "Dennis Health Certificate.pdf",
+            "subtitle": "Document",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/health-certificate.pdf",
+            "body": "Dennis certificate pdf",
+        },
+    )
+    assert created.status_code == 200
+
+    response = chat(
+        "ocr",
+        [
+            {"role": "user", "content": "find dennis-vault-passport-missing.pdf"},
+            {"role": "assistant", "content": 'I found "Dennis-Vault-Passport-Missing.pdf" in your vault files.'},
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Tell me which vault document to OCR, for example: OCR Dennis-Passport.pdf"
+    assert called is False
+
+
+def test_assistant_ocr_matches_recent_title_normalized(monkeypatch):
+    os.makedirs(ROOT / "uploads", exist_ok=True)
+    upload_path = ROOT / "uploads" / "dennis-passport-normalized.pdf"
+    upload_path.write_bytes(b"%PDF-1.4 test")
+
+    async def fake_vision(prompt, vision_images, mime_type, max_attempts=2):
+        return (
+            '{"document_title":"Dennis Passport","category":"Passport","expiry_date":"None","summary":"Passport scan","full_text":"Normalized passport text"}',
+            1,
+            "",
+        )
+
+    monkeypatch.setattr(main, "extract_pdf_text", lambda contents: "", raising=False)
+    monkeypatch.setattr(main, "render_pdf_pages_for_vision", lambda contents: ["image-b64"], raising=False)
+    monkeypatch.setattr(main, "request_vault_vision_extraction", fake_vision, raising=False)
+    created = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "Dennis Unique Passport.pdf",
+            "subtitle": "Document",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/dennis-passport-normalized.pdf",
+        },
+    )
+    assert created.status_code == 200
+
+    response = chat(
+        "ocr",
+        [
+            {"role": "user", "content": "find dennis-unique-passport.pdf"},
+            {"role": "assistant", "content": 'I found "dennis-unique-passport.pdf" in your vault files.'},
+        ],
+    )
+
+    assert response.status_code == 200
+    assert "OCR updated Dennis Passport.pdf" in response.json()["reply"]

@@ -86,6 +86,7 @@ EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECAS
 SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
 DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
 DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
+OCR_WORD_RE = re.compile(r"\b(?:ocr|scan|rescan|re-scan|read document|read file)\b", re.IGNORECASE)
 RENAME_RE = re.compile(r"\brename\b.*?\bto\s+(.+)$", re.IGNORECASE)
 CREATE_TASK_RE = re.compile(r"\b(?:create|add|new)\s+task\s+(.+)$", re.IGNORECASE)
 QUICK_TASK_RE = re.compile(r"^\s*(?:task|todo):\s*(.+)$", re.IGNORECASE)
@@ -265,6 +266,20 @@ def find_vault_document_by_title(title: str, db: Session) -> Optional[models.Ite
         .filter(models.Item.type == "vault_file", models.Item.title == title)
         .first()
     )
+
+
+def find_vault_document_by_normalized_title(title: str, db: Session) -> tuple[Optional[models.Item], Optional[dict]]:
+    wanted = normalize_search_text(title)
+    if not wanted:
+        return None, None
+    matches = [
+        item
+        for item in db.query(models.Item).filter(models.Item.type == "vault_file").all()
+        if normalize_search_text(item.title or "") == wanted
+    ]
+    if len(matches) > 1:
+        return None, ambiguous_vault_match_reply([{"doc": item} for item in matches])
+    return (matches[0], None) if matches else (None, None)
 
 
 def preserve_file_extension(old_title: str, new_title: str) -> str:
@@ -1208,6 +1223,128 @@ def handle_document_rename_request(message: str, history: list, db: Session) -> 
     return {"reply": f"Renamed {old_title} to {doc.title}."}
 
 
+def recent_vault_document_title(history: list) -> str:
+    filename_re = re.compile(r'["“]([^"”]+?\.(?:pdf|png|jpe?g|docx?))["”]', re.IGNORECASE)
+    loose_re = re.compile(r"\b([\w .,_-]+?\.(?:pdf|png|jpe?g|docx?))\b", re.IGNORECASE)
+    for h in reversed(history[-8:]):
+        if not isinstance(h, dict):
+            continue
+        content = h.get("content", "")
+        if not content:
+            continue
+        match = filename_re.search(content) or loose_re.search(content)
+        if match:
+            return match.group(1).strip(" .")
+    return ""
+
+
+def find_vault_document_for_ocr(message: str, history: list, db: Session) -> tuple[Optional[models.Item], Optional[dict]]:
+    title = recent_vault_document_title(history)
+    search_text = OCR_WORD_RE.sub(" ", message or "").strip()
+    if title and not search_text:
+        doc = find_vault_document_by_title(title, db)
+        if doc:
+            return doc, None
+        doc, match_error = find_vault_document_by_normalized_title(title, db)
+        if doc or match_error:
+            return doc, match_error
+        return None, None
+    elif title:
+        doc = find_vault_document_by_title(title, db)
+        if doc:
+            return doc, None
+        doc, match_error = find_vault_document_by_normalized_title(title, db)
+        if doc or match_error:
+            return doc, match_error
+
+    if not search_text:
+        for h in reversed(history[-8:]):
+            if isinstance(h, dict) and h.get("content"):
+                search_text = f"{search_text} {h['content']}".strip()
+
+    match, match_error = resolve_vault_document_match(search_text, db)
+    if match_error:
+        return None, match_error
+    return (match["doc"], None) if match else (None, None)
+
+
+def vault_file_mime_type(path: str) -> str:
+    lower = path.lower()
+    if lower.endswith(".pdf"):
+        return "application/pdf"
+    if lower.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if lower.endswith(".png"):
+        return "image/png"
+    return "application/octet-stream"
+
+
+async def retry_vault_document_ocr(doc: models.Item, db: Session, request_text: str = "") -> dict:
+    upload_path = local_upload_path(doc.image_url)
+    if not upload_path or not os.path.exists(upload_path):
+        return {"reply": f"I found {doc.title}, but the stored file is missing. Please upload it again."}
+
+    with open(upload_path, "rb") as uploaded:
+        contents = uploaded.read()
+
+    mime_type = vault_file_mime_type(upload_path)
+    pdf_text = ""
+    vision_images: list[str] = []
+    vision_mime_type = mime_type
+    if mime_type == "application/pdf":
+        pdf_text = extract_pdf_text(contents)
+        vision_images = render_pdf_pages_for_vision(contents)
+        vision_mime_type = "image/jpeg"
+    elif mime_type.startswith("image/"):
+        vision_images = [base64.b64encode(contents).decode("utf-8")]
+
+    prompt = vault_index_prompt(doc.title, pdf_text)
+    ocr_text, scan_attempts, scan_error = await request_vault_vision_extraction(prompt, vision_images, vision_mime_type)
+    extracted = build_vault_scan_result(
+        ocr_text=ocr_text,
+        filename=doc.title,
+        pdf_text=pdf_text,
+        vision_attempts=scan_attempts,
+        vision_error=scan_error,
+    )
+
+    old_title = doc.title
+    display_title = preserve_file_extension(old_title, extracted["document_title"] or old_title)
+    category = extracted["category"] or "Document"
+    summary = extracted["summary"]
+    index_text = build_vault_index_text(old_title, display_title, category, summary, extracted, pdf_text)
+    doc.title = display_title
+    doc.subtitle = f"{category} • OCR {extracted['scan_status']}"
+    doc.body = vault_body_payload(index_text, extracted, summary)
+    expiry = extracted["expiry_date"] or "None"
+    if expiry.lower() != "none" and len(expiry) > 4:
+        doc.expiry_date = expiry
+    db.commit()
+    audit_action(
+        db,
+        action="retry_vault_ocr",
+        risk_level=2,
+        status=extracted["scan_status"],
+        target_type="vault_file",
+        target_id=doc.id,
+        summary=f"OCR {extracted['scan_status']} for {doc.title}",
+        request_text=request_text,
+        payload={"old_title": old_title, "new_title": doc.title, "scan_attempts": scan_attempts, "scan_error": scan_error},
+    )
+    return {"reply": f"OCR updated {doc.title}. Status: {extracted['scan_status']} after {scan_attempts} attempt(s)."}
+
+
+async def handle_document_ocr_request(message: str, history: list, db: Session) -> Optional[dict]:
+    if not OCR_WORD_RE.search(message or ""):
+        return None
+    doc, match_error = find_vault_document_for_ocr(message, history, db)
+    if match_error:
+        return match_error
+    if not doc:
+        return {"reply": "Tell me which vault document to OCR, for example: OCR Dennis-Passport.pdf"}
+    return await retry_vault_document_ocr(doc, db, request_text=message)
+
+
 def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
     task_match = CREATE_TASK_RE.search(message or "") or QUICK_TASK_RE.search(message or "")
     if task_match:
@@ -1473,6 +1610,49 @@ async def request_vault_vision_extraction(prompt: str, vision_images: list[str],
     return "", max_attempts, last_error
 
 
+def vault_index_prompt(filename: str, pdf_text: str = "") -> str:
+    return f"""
+You are indexing an employee/document vault file.
+Filename: {filename}
+Embedded PDF text, if present:
+{pdf_text[:12000]}
+
+Read the visible pages and embedded text. Identify the document accurately, especially labour contracts, insurance certificates, IDs, visas, passports, NOCs, and employment documents.
+Return ONLY valid JSON with these keys:
+{{"document_title":"specific human title","category":"document category","expiry_date":"YYYY-MM-DD or None","summary":"one sentence summary","full_text":"best readable text for search"}}
+If an expiry date is not explicitly present, use "None". Do not guess dates.
+"""
+
+
+def build_vault_index_text(filename: str, display_title: str, category: str, summary: str, extracted: dict, pdf_text: str = "") -> str:
+    return "\n\n".join(
+        part for part in [
+            f"Filename: {display_title}",
+            f"Original filename: {filename}",
+            f"Title: {display_title}",
+            f"Category: {category}",
+            f"Summary: {summary}" if summary else "",
+            f"Scan status: {extracted['scan_status']}",
+            f"Scan attempts: {extracted['scan_attempts']}",
+            f"Scan error: {extracted['scan_error']}" if extracted["scan_error"] else "",
+            extracted["full_text"],
+            pdf_text,
+        ]
+        if part
+    )
+
+
+def vault_body_payload(index_text: str, extracted: dict, summary: str) -> str:
+    return dump_item_body({
+        "index_text": index_text,
+        "scan_status": extracted["scan_status"],
+        "scan_attempts": extracted["scan_attempts"],
+        "scan_error": extracted["scan_error"],
+        "summary": summary,
+        "full_text": extracted["full_text"],
+    })
+
+
 def direct_vault_match_answer(docs: list[models.Item]) -> Optional[str]:
     if not docs:
         return None
@@ -1596,6 +1776,10 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     rename_intent = handle_document_rename_request(message, history, db)
     if rename_intent:
         return rename_intent
+
+    ocr_intent = await handle_document_ocr_request(message, history, db)
+    if ocr_intent:
+        return ocr_intent
 
     mail_intent = handle_document_email_request(message, history, db)
     if mail_intent:
@@ -1964,17 +2148,7 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
 
     image_url = uploaded_file_url(filename)
 
-    prompt = f"""
-You are indexing an employee/document vault file.
-Filename: {file.filename}
-Embedded PDF text, if present:
-{pdf_text[:12000]}
-
-Read the visible pages and embedded text. Identify the document accurately, especially labour contracts, insurance certificates, IDs, visas, passports, NOCs, and employment documents.
-Return ONLY valid JSON with these keys:
-{{"document_title":"specific human title","category":"document category","expiry_date":"YYYY-MM-DD or None","summary":"one sentence summary","full_text":"best readable text for search"}}
-If an expiry date is not explicitly present, use "None". Do not guess dates.
-"""
+    prompt = vault_index_prompt(file.filename, pdf_text)
 
     ocr_text, scan_attempts, scan_error = await request_vault_vision_extraction(prompt, vision_images, mime_type)
     extracted = build_vault_scan_result(
@@ -1988,34 +2162,13 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
     category = extracted["category"] or "Document"
     expiry = extracted["expiry_date"] or "None"
     summary = extracted["summary"]
-    index_text = "\n\n".join(
-        part for part in [
-            f"Filename: {display_title}",
-            f"Original filename: {file.filename}",
-            f"Title: {display_title}",
-            f"Category: {category}",
-            f"Summary: {summary}" if summary else "",
-            f"Scan status: {extracted['scan_status']}",
-            f"Scan attempts: {extracted['scan_attempts']}",
-            f"Scan error: {extracted['scan_error']}" if extracted["scan_error"] else "",
-            extracted["full_text"],
-            pdf_text,
-        ]
-        if part
-    )
+    index_text = build_vault_index_text(file.filename, display_title, category, summary, extracted, pdf_text)
 
     vault_item = models.Item(
         type="vault_file",
         title=display_title,
         subtitle=f"{category} • Processed today",
-        body=dump_item_body({
-            "index_text": index_text,
-            "scan_status": extracted["scan_status"],
-            "scan_attempts": extracted["scan_attempts"],
-            "scan_error": extracted["scan_error"],
-            "summary": summary,
-            "full_text": extracted["full_text"],
-        }),
+        body=vault_body_payload(index_text, extracted, summary),
         image_url=image_url,
         workspace=workspace
     )

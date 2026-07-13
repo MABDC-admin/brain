@@ -83,6 +83,16 @@ def test_clear_data_uses_backend_clear_all_endpoint() -> None:
     assert "items.map(i => fetch" not in frontend
 
 
+def test_assistant_has_local_vault_ocr_retry_command() -> None:
+    backend = read("backend/main.py")
+    assert "OCR_WORD_RE" in backend
+    assert "async def handle_document_ocr_request" in backend
+    assert "async def retry_vault_document_ocr" in backend
+    assert "await handle_document_ocr_request(message, history, db)" in backend
+    assert "vault_index_prompt" in backend
+    assert "vault_body_payload" in backend
+
+
 def test_module_registry_exists_and_drives_workspaces() -> None:
     registry = read("frontend/src/modules/moduleRegistry.js")
     workspaces = read("frontend/src/pages/WorkspacesPage.jsx")
