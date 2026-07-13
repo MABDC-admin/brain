@@ -104,6 +104,23 @@ def test_phase_two_audit_pages_and_endpoints_are_registered() -> None:
     assert "/api/email/audit/${id}/resend" in email_page
 
 
+def test_phase_three_vault_intelligence_is_registered() -> None:
+    backend = read("backend/main.py")
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    assert "owner" in backend
+    assert "VaultMetadataUpdate" in backend
+    assert '@app.patch("/api/vault/{item_id}/metadata"' in backend
+    assert "review_vault_metadata" in backend
+    assert "Person / employee" in vault
+    assert "Review OCR" in vault
+    assert "/api/vault/${reviewFile.id}/metadata" in vault
+    assert "filterOwner" in vault
+    assert "filterCategory" in vault
+    assert "daysUntil" in vault
+    assert "/items/${f.id}/share" in vault
+    assert "/shared/${data.share_token}" in vault
+
+
 def test_frontend_has_no_development_console_log() -> None:
     assert_absent("frontend/src/main.jsx", "console.log")
 

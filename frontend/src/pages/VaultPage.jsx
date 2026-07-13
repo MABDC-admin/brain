@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, UploadCloud, X, Zap, Mic, Share } from 'lucide-react';
+import { CalendarClock, Check, ExternalLink, FolderOpen, FileText, File as LucideFile, FileImage, Pencil, UploadCloud, UserRound, X, Zap, Mic, Share } from 'lucide-react';
 import { useHaptic } from '../hooks/useHaptic.js';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 
@@ -14,6 +14,31 @@ function parseVaultBody(file) {
   }
 }
 
+function vaultMeta(file) {
+  const body = parseVaultBody(file);
+  const subtitleParts = (file.subtitle || '').split('•').map(part => part.trim()).filter(Boolean);
+  return {
+    body,
+    category: body.category || subtitleParts[0] || 'Document',
+    owner: body.owner || file.tags || subtitleParts[1] || '',
+    expiry: body.expiry_date && body.expiry_date !== 'None' ? body.expiry_date : file.expiry_date || '',
+    summary: body.summary || '',
+    fullText: body.full_text || '',
+    scanStatus: body.scan_status || '',
+    scanAttempts: body.scan_attempts || 0,
+    scanError: body.scan_error || '',
+  };
+}
+
+function daysUntil(dateValue) {
+  if (!dateValue) return null;
+  const expiry = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(expiry.getTime())) return null;
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.ceil((expiry - start) / 86400000);
+}
+
 export default function VaultPage({ workspace }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -25,6 +50,11 @@ export default function VaultPage({ workspace }) {
   const [asking, setAsking] = useState(false);
   const [recording, setRecording] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [reviewFile, setReviewFile] = useState(null);
+  const [reviewForm, setReviewForm] = useState(null);
+  const [savingReview, setSavingReview] = useState(false);
+  const [filterOwner, setFilterOwner] = useState('All');
+  const [filterCategory, setFilterCategory] = useState('All');
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, failed: [] });
   const fileInputRef = useRef(null);
   const haptic = useHaptic();
@@ -42,6 +72,20 @@ export default function VaultPage({ workspace }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setTargetWorkspace(workspace || 'Personal'); }, [workspace]);
+
+  const enrichedFiles = files.map(file => ({ ...file, _meta: vaultMeta(file) }));
+  const owners = ['All', ...Array.from(new Set(enrichedFiles.map(file => file._meta.owner).filter(Boolean))).sort()];
+  const categories = ['All', ...Array.from(new Set(enrichedFiles.map(file => file._meta.category).filter(Boolean))).sort()];
+  const expiringSoon = enrichedFiles.filter(file => {
+    const days = daysUntil(file._meta.expiry);
+    return days !== null && days <= 90;
+  }).length;
+  const reviewedCount = enrichedFiles.filter(file => file._meta.scanStatus === 'reviewed').length;
+  const filteredFiles = enrichedFiles.filter(file => {
+    const ownerOk = filterOwner === 'All' || file._meta.owner === filterOwner;
+    const categoryOk = filterCategory === 'All' || file._meta.category === filterCategory;
+    return ownerOk && categoryOk;
+  });
 
   const toggleMic = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -144,21 +188,32 @@ export default function VaultPage({ workspace }) {
     }
   };
 
-  const shareItem = (f, e) => {
+  const shareItem = async (f, e) => {
     e.stopPropagation();
     haptic.tap();
     if (!f.image_url) {
       alert("This document does not have a shareable link yet.");
       return;
     }
+    let url = '';
+    try {
+      const response = await fetch(`${API}/items/${f.id}/share`, { method: 'POST' });
+      if (!response.ok) throw new Error('Share failed');
+      const data = await response.json();
+      url = `${window.location.origin}/shared/${data.share_token}`;
+    } catch {
+      haptic.error();
+      alert('Could not create a shared link.');
+      return;
+    }
     if (navigator.share) {
       navigator.share({
         title: f.title,
         text: `Check out this document: ${f.title}`,
-        url: f.image_url
+        url
       }).catch(() => {});
     } else {
-      navigator.clipboard.writeText(f.image_url);
+      navigator.clipboard.writeText(url);
       alert("Link copied to clipboard!");
     }
   };
@@ -168,6 +223,43 @@ export default function VaultPage({ workspace }) {
       setSelectedFile(f);
     } else {
       alert("Preview not available for this item.");
+    }
+  };
+
+  const beginReview = (file) => {
+    const meta = vaultMeta(file);
+    setReviewFile(file);
+    setReviewForm({
+      title: file.title || '',
+      category: meta.category,
+      owner: meta.owner,
+      expiry_date: meta.expiry || 'None',
+      summary: meta.summary,
+      full_text: meta.fullText,
+    });
+  };
+
+  const saveReview = async () => {
+    if (!reviewFile || !reviewForm) return;
+    setSavingReview(true);
+    try {
+      const res = await fetch(`${API}/api/vault/${reviewFile.id}/metadata`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reviewForm),
+      });
+      if (!res.ok) throw new Error('Review save failed');
+      const updated = await res.json();
+      setFiles(current => current.map(file => file.id === updated.id ? updated : file));
+      setSelectedFile(updated);
+      setReviewFile(null);
+      setReviewForm(null);
+      haptic.success();
+    } catch {
+      haptic.error();
+      alert('Could not save OCR review.');
+    } finally {
+      setSavingReview(false);
     }
   };
 
@@ -305,24 +397,51 @@ export default function VaultPage({ workspace }) {
             <p className="text-sm text-indigo-100 leading-relaxed">{ragAnswer}</p>
           </div>
         )}
+
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className="rounded-2xl bg-[#14151b] border border-[#2a2b36] p-3">
+            <p className="text-lg font-black text-white">{files.length}</p>
+            <p className="text-[10px] font-bold uppercase text-gray-500">Docs</p>
+          </div>
+          <div className="rounded-2xl bg-[#14151b] border border-[#2a2b36] p-3">
+            <p className="text-lg font-black text-amber-300">{expiringSoon}</p>
+            <p className="text-[10px] font-bold uppercase text-gray-500">90 days</p>
+          </div>
+          <div className="rounded-2xl bg-[#14151b] border border-[#2a2b36] p-3">
+            <p className="text-lg font-black text-emerald-300">{reviewedCount}</p>
+            <p className="text-[10px] font-bold uppercase text-gray-500">Reviewed</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)}
+            className="bg-[#14151b] border border-[#2a2b36] rounded-xl px-3 py-2 text-xs text-white outline-none">
+            {owners.map(owner => <option key={owner} value={owner}>{owner === 'All' ? 'All people' : owner}</option>)}
+          </select>
+          <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
+            className="bg-[#14151b] border border-[#2a2b36] rounded-xl px-3 py-2 text-xs text-white outline-none">
+            {categories.map(category => <option key={category} value={category}>{category === 'All' ? 'All categories' : category}</option>)}
+          </select>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto scrollbar-hide px-6 pb-24">
         {loading ? (
           <div className="flex justify-center py-10"><div className="w-8 h-8 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"/></div>
-        ) : files.length === 0 ? (
+        ) : filteredFiles.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center opacity-50">
             <FolderOpen className="w-16 h-16 text-gray-500 mb-4" />
-            <p className="text-lg font-bold text-white mb-1">Your Vault is Empty</p>
-            <p className="text-sm text-gray-400 max-w-[200px]">Upload PDFs, IDs, and contracts to securely store and query them.</p>
+            <p className="text-lg font-bold text-white mb-1">{files.length ? 'No matches' : 'Your Vault is Empty'}</p>
+            <p className="text-sm text-gray-400 max-w-[220px]">{files.length ? 'Change the person or category filter.' : 'Upload PDFs, IDs, and contracts to securely store and query them.'}</p>
           </div>
         ) : (
           <div className="space-y-3">
-            {files.map((f) => {
-              const meta = parseVaultBody(f);
-              const scanStatus = meta.scan_status || '';
-              const scanAttempts = meta.scan_attempts || 0;
-              const scanError = meta.scan_error || '';
+            {filteredFiles.map((f) => {
+              const meta = f._meta;
+              const scanStatus = meta.scanStatus;
+              const scanAttempts = meta.scanAttempts;
+              const scanError = meta.scanError;
+              const expiryDays = daysUntil(meta.expiry);
               return (
               <SwipeableRow
                 key={f.id}
@@ -347,6 +466,11 @@ export default function VaultPage({ workspace }) {
                           {f.tags}
                         </span>
                       )}
+                      {meta.owner && !f.tags && (
+                        <span className="bg-blue-500/15 text-blue-300 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                          {meta.owner}
+                        </span>
+                      )}
                       {scanStatus === 'fallback' && (
                         <span className="bg-amber-500/15 text-amber-300 text-[10px] px-2 py-0.5 rounded-full font-bold" title={scanError || 'Vision scan used fallback text'}>
                           Fallback OCR
@@ -358,7 +482,14 @@ export default function VaultPage({ workspace }) {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5">{f.subtitle}</p>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <p className="text-xs text-gray-500">{f.subtitle}</p>
+                      {meta.expiry && (
+                        <span className={`text-[10px] font-bold ${expiryDays !== null && expiryDays <= 90 ? 'text-amber-300' : 'text-gray-500'}`}>
+                          exp {meta.expiry}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-1">
                     <button onClick={(e) => shareItem(f, e)}
@@ -387,7 +518,29 @@ export default function VaultPage({ workspace }) {
             <button onClick={() => window.open(selectedFile.image_url, '_blank', 'noopener,noreferrer')} className="p-2 bg-[#1a1b23] rounded-xl text-gray-400 hover:text-indigo-400 transition-colors" title="Open externally">
               <ExternalLink className="w-5 h-5"/>
             </button>
+            <button onClick={() => beginReview(selectedFile)} className="p-2 bg-[#1a1b23] rounded-xl text-gray-400 hover:text-emerald-300 transition-colors" title="Review OCR">
+              <Pencil className="w-5 h-5"/>
+            </button>
           </div>
+          {(() => {
+            const meta = vaultMeta(selectedFile);
+            return (
+              <div className="grid grid-cols-3 gap-2 px-4 py-3 border-b border-[#1a1b23] bg-[#101117]">
+                <div className="rounded-xl bg-[#1a1b23] px-3 py-2">
+                  <p className="text-[10px] uppercase text-gray-500 font-bold">Owner</p>
+                  <p className="text-xs text-white truncate">{meta.owner || 'Unknown'}</p>
+                </div>
+                <div className="rounded-xl bg-[#1a1b23] px-3 py-2">
+                  <p className="text-[10px] uppercase text-gray-500 font-bold">Category</p>
+                  <p className="text-xs text-white truncate">{meta.category}</p>
+                </div>
+                <div className="rounded-xl bg-[#1a1b23] px-3 py-2">
+                  <p className="text-[10px] uppercase text-gray-500 font-bold">Expiry</p>
+                  <p className="text-xs text-white truncate">{meta.expiry || 'None'}</p>
+                </div>
+              </div>
+            );
+          })()}
           <div className="flex-1 bg-[#05060a]">
             {selectedFile.title?.toLowerCase().endsWith('.pdf') ? (
               <iframe
@@ -409,6 +562,48 @@ export default function VaultPage({ workspace }) {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {reviewFile && reviewForm && (
+        <div className="absolute inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-end">
+          <div className="w-full max-h-[88%] overflow-y-auto rounded-t-3xl bg-[#14151b] border-t border-[#2a2b36] p-5">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-lg font-black text-white">Review OCR</h3>
+                <p className="text-xs text-gray-500">Correct the searchable document metadata.</p>
+              </div>
+              <button onClick={() => setReviewFile(null)} className="p-2 text-gray-400"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="space-y-3">
+              {[
+                ['title', 'Title', FileText],
+                ['category', 'Category', FolderOpen],
+                ['owner', 'Person / employee', UserRound],
+                ['expiry_date', 'Expiry date', CalendarClock],
+              ].map(([key, label, Icon]) => (
+                <label key={key} className="block">
+                  <span className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase text-gray-500"><Icon className="w-3.5 h-3.5"/>{label}</span>
+                  <input value={reviewForm[key]} onChange={e => setReviewForm(form => ({ ...form, [key]: e.target.value }))}
+                    className="w-full rounded-xl bg-[#0b0c10] border border-[#2a2b36] px-3 py-3 text-sm text-white outline-none focus:border-indigo-400"/>
+                </label>
+              ))}
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-bold uppercase text-gray-500">Summary</span>
+                <textarea value={reviewForm.summary} onChange={e => setReviewForm(form => ({ ...form, summary: e.target.value }))}
+                  className="h-20 w-full rounded-xl bg-[#0b0c10] border border-[#2a2b36] px-3 py-3 text-sm text-white outline-none focus:border-indigo-400"/>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-bold uppercase text-gray-500">Search text</span>
+                <textarea value={reviewForm.full_text} onChange={e => setReviewForm(form => ({ ...form, full_text: e.target.value }))}
+                  className="h-28 w-full rounded-xl bg-[#0b0c10] border border-[#2a2b36] px-3 py-3 text-sm text-white outline-none focus:border-indigo-400"/>
+              </label>
+            </div>
+            <button onClick={saveReview} disabled={savingReview}
+              className="mt-5 w-full rounded-xl bg-emerald-500 py-3.5 text-sm font-black text-white disabled:opacity-60 flex items-center justify-center gap-2">
+              <Check className="w-5 h-5"/>{savingReview ? 'Saving...' : 'Save review'}
+            </button>
           </div>
         </div>
       )}

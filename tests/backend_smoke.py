@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import sys
 import tempfile
@@ -717,17 +718,59 @@ def test_assistant_vault_action_blocks_ambiguous_document_match(monkeypatch):
 
 def test_vault_extraction_normalizes_expiry_and_preserves_search_text():
     parsed = main.parse_vault_extraction(
-        '{"document_title":"Dennis Labour Contract","category":"Labour Contract","expiry_date":"04 October 2026","summary":"Employment contract","full_text":"Employee Dennis"}',
+        '{"document_title":"Dennis Labour Contract","category":"Labour Contract","owner":"Dennis","expiry_date":"04 October 2026","summary":"Employment contract","full_text":"Employee Dennis"}',
         "LABOUR CONTRACT.pdf",
         "Original PDF text",
     )
 
     assert parsed["document_title"] == "Dennis Labour Contract"
+    assert parsed["owner"] == "Dennis"
     assert parsed["expiry_date"] == "2026-10-04"
     assert "Employee Dennis" in parsed["full_text"]
 
     fallback = main.parse_vault_extraction("Labour Contract|10/04/2026|Readable text", "fallback.pdf", "")
     assert fallback["expiry_date"] == "2026-10-04"
+    assert fallback["owner"] == ""
+
+
+def test_vault_review_updates_metadata_and_search_index():
+    created = client.post(
+        "/items",
+        json={
+            "type": "vault_file",
+            "title": "Raw scan.pdf",
+            "subtitle": "Document",
+            "workspace": "Personal",
+            "image_url": "https://brain.mabdc.com/static/raw-scan.pdf",
+            "body": '{"scan_status":"success","scan_attempts":1,"scan_error":"","summary":"Old","full_text":"Old text"}',
+        },
+    )
+    assert created.status_code == 200
+    item_id = created.json()["id"]
+
+    response = client.patch(
+        f"/api/vault/{item_id}/metadata",
+        json={
+            "title": "Dennis Passport",
+            "category": "Passport",
+            "owner": "Dennis",
+            "expiry_date": "2030-01-31",
+            "summary": "Reviewed passport",
+            "full_text": "Passport holder Dennis reviewed",
+        },
+    )
+
+    assert response.status_code == 200
+    item = response.json()
+    assert item["title"] == "Dennis Passport.pdf"
+    assert item["subtitle"] == "Passport • Dennis • Reviewed"
+    assert item["expiry_date"] == "2030-01-31"
+    assert item["tags"] == "Dennis"
+    body = json.loads(item["body"])
+    assert body["owner"] == "Dennis"
+    assert body["category"] == "Passport"
+    assert body["scan_status"] == "reviewed"
+    assert "Passport holder Dennis reviewed" in body["index_text"]
 
 
 def test_due_reminder_notifications_are_sent_once_per_day(monkeypatch):

@@ -89,6 +89,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class VaultMetadataUpdate(BaseModel):
+    title: str
+    category: str = "Document"
+    owner: str = ""
+    expiry_date: str = "None"
+    summary: str = ""
+    full_text: str = ""
+
+
 def model_data(model: BaseModel, *, exclude_unset: bool = False) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=exclude_unset)
@@ -1059,6 +1068,50 @@ def delete_vault_item(
     return {"ok": True}
 
 
+@app.patch("/api/vault/{item_id}/metadata", response_model=schemas.Item)
+def update_vault_metadata(item_id: int, payload: VaultMetadataUpdate, db: Session = Depends(get_db)):
+    item = db.query(models.Item).filter(models.Item.id == item_id, models.Item.type == "vault_file").first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Vault document not found")
+
+    display_title = preserve_file_extension(item.title, payload.title or item.title)
+    category = (payload.category or "Document").strip()
+    owner = (payload.owner or "").strip()
+    expiry = normalize_expiry_date(payload.expiry_date or "None")
+    summary = (payload.summary or "").strip()
+    full_text = (payload.full_text or "").strip()
+    index_text, body = reviewed_vault_payload(
+        original_filename=item.title,
+        display_title=display_title,
+        category=category,
+        owner=owner,
+        expiry_date=expiry,
+        summary=summary,
+        full_text=full_text,
+    )
+
+    old_title = item.title
+    item.title = display_title
+    item.subtitle = vault_subtitle(category, owner, "Reviewed")
+    item.body = body
+    item.tags = owner or item.tags
+    item.expiry_date = None if expiry.lower() == "none" else expiry
+    db.commit()
+    db.refresh(item)
+    audit_action(
+        db,
+        action="review_vault_metadata",
+        risk_level=2,
+        status="completed",
+        target_type="vault_file",
+        target_id=item.id,
+        summary=f"Reviewed vault metadata for {item.title}",
+        request_text=f"PATCH /api/vault/{item_id}/metadata",
+        payload={"old_title": old_title, "new_title": item.title, "category": category, "owner": owner, "expiry_date": expiry, "index_text": index_text},
+    )
+    return item
+
+
 def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
     MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
     if not MABDC_MAIL_API_KEY:
@@ -1498,11 +1551,13 @@ async def retry_vault_document_ocr(doc: models.Item, db: Session, request_text: 
     old_title = doc.title
     display_title = preserve_file_extension(old_title, extracted["document_title"] or old_title)
     category = extracted["category"] or "Document"
+    owner = extracted.get("owner", "")
     summary = extracted["summary"]
     index_text = build_vault_index_text(old_title, display_title, category, summary, extracted, pdf_text)
     doc.title = display_title
-    doc.subtitle = f"{category} • OCR {extracted['scan_status']}"
+    doc.subtitle = vault_subtitle(category, owner, f"OCR {extracted['scan_status']}")
     doc.body = vault_body_payload(index_text, extracted, summary)
+    doc.tags = owner or doc.tags
     expiry = extracted["expiry_date"] or "None"
     if expiry.lower() != "none" and len(expiry) > 4:
         doc.expiry_date = expiry
@@ -1720,6 +1775,7 @@ def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> 
     fallback = {
         "document_title": os.path.splitext(filename)[0] or "Document",
         "category": "Document",
+        "owner": "",
         "expiry_date": "None",
         "summary": "",
         "full_text": pdf_text,
@@ -1732,6 +1788,7 @@ def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> 
         return {
             "document_title": str(data.get("document_title") or fallback["document_title"]).strip(),
             "category": str(data.get("category") or fallback["category"]).strip(),
+            "owner": str(data.get("owner") or data.get("person") or data.get("employee_name") or fallback["owner"]).strip(),
             "expiry_date": normalize_expiry_date(str(data.get("expiry_date") or fallback["expiry_date"]).strip()),
             "summary": str(data.get("summary") or fallback["summary"]).strip(),
             "full_text": str(data.get("full_text") or fallback["full_text"]).strip(),
@@ -1758,6 +1815,7 @@ def build_vault_scan_result(
     if not has_vision_text:
         extracted["document_title"] = os.path.splitext(filename)[0] or "Document"
         extracted["category"] = extracted.get("category") or "Document"
+        extracted["owner"] = extracted.get("owner") or ""
         extracted["summary"] = extracted.get("summary") or "Vision scan unavailable; indexed fallback text."
         extracted["full_text"] = extracted.get("full_text") or pdf_text or filename
     extracted["scan_status"] = "success" if has_vision_text else "fallback"
@@ -1806,7 +1864,7 @@ Embedded PDF text, if present:
 
 Read the visible pages and embedded text. Identify the document accurately, especially labour contracts, insurance certificates, IDs, visas, passports, NOCs, and employment documents.
 Return ONLY valid JSON with these keys:
-{{"document_title":"specific human title","category":"document category","expiry_date":"YYYY-MM-DD or None","summary":"one sentence summary","full_text":"best readable text for search"}}
+{{"document_title":"specific human title","category":"document category","owner":"person or employee name, or empty string","expiry_date":"YYYY-MM-DD or None","summary":"one sentence summary","full_text":"best readable text for search"}}
 If an expiry date is not explicitly present, use "None". Do not guess dates.
 """
 
@@ -1818,6 +1876,7 @@ def build_vault_index_text(filename: str, display_title: str, category: str, sum
             f"Original filename: {filename}",
             f"Title: {display_title}",
             f"Category: {category}",
+            f"Owner: {extracted.get('owner', '')}" if extracted.get("owner") else "",
             f"Summary: {summary}" if summary else "",
             f"Scan status: {extracted['scan_status']}",
             f"Scan attempts: {extracted['scan_attempts']}",
@@ -1837,7 +1896,43 @@ def vault_body_payload(index_text: str, extracted: dict, summary: str) -> str:
         "scan_error": extracted["scan_error"],
         "summary": summary,
         "full_text": extracted["full_text"],
+        "category": extracted.get("category", ""),
+        "owner": extracted.get("owner", ""),
+        "expiry_date": extracted.get("expiry_date", "None"),
     })
+
+
+def vault_subtitle(category: str, owner: str = "", status: str = "Processed today") -> str:
+    parts = [category or "Document"]
+    if owner:
+        parts.append(owner)
+    parts.append(status)
+    return " • ".join(parts)
+
+
+def reviewed_vault_payload(
+    *,
+    original_filename: str,
+    display_title: str,
+    category: str,
+    owner: str,
+    expiry_date: str,
+    summary: str,
+    full_text: str,
+) -> tuple[str, str]:
+    extracted = {
+        "document_title": display_title,
+        "category": category or "Document",
+        "owner": owner or "",
+        "expiry_date": normalize_expiry_date(expiry_date or "None"),
+        "summary": summary or "",
+        "full_text": full_text or "",
+        "scan_status": "reviewed",
+        "scan_attempts": 0,
+        "scan_error": "",
+    }
+    index_text = build_vault_index_text(original_filename, display_title, extracted["category"], extracted["summary"], extracted)
+    return index_text, vault_body_payload(index_text, extracted, extracted["summary"])
 
 
 def direct_vault_match_answer(docs: list[models.Item]) -> Optional[str]:
@@ -2374,6 +2469,7 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
     )
     display_title = preserve_file_extension(file.filename, extracted["document_title"] or file.filename)
     category = extracted["category"] or "Document"
+    owner = extracted.get("owner", "")
     expiry = extracted["expiry_date"] or "None"
     summary = extracted["summary"]
     index_text = build_vault_index_text(file.filename, display_title, category, summary, extracted, pdf_text)
@@ -2381,10 +2477,11 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
     vault_item = models.Item(
         type="vault_file",
         title=display_title,
-        subtitle=f"{category} • Processed today",
+        subtitle=vault_subtitle(category, owner),
         body=vault_body_payload(index_text, extracted, summary),
         image_url=image_url,
-        workspace=workspace
+        workspace=workspace,
+        tags=owner or None,
     )
     db.add(vault_item)
 
