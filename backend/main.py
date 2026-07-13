@@ -1421,6 +1421,58 @@ def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> 
         return fallback
 
 
+def build_vault_scan_result(
+    *,
+    ocr_text: str,
+    filename: str,
+    pdf_text: str = "",
+    vision_attempts: int = 0,
+    vision_error: str = "",
+) -> dict:
+    extracted = parse_vault_extraction(ocr_text, filename, pdf_text)
+    has_vision_text = bool((ocr_text or "").strip())
+    if not has_vision_text:
+        extracted["document_title"] = os.path.splitext(filename)[0] or "Document"
+        extracted["category"] = extracted.get("category") or "Document"
+        extracted["summary"] = extracted.get("summary") or "Vision scan unavailable; indexed fallback text."
+        extracted["full_text"] = extracted.get("full_text") or pdf_text or filename
+    extracted["scan_status"] = "success" if has_vision_text else "fallback"
+    extracted["scan_attempts"] = vision_attempts
+    extracted["scan_error"] = "" if has_vision_text else (vision_error or "Vision scan produced no readable result")
+    return extracted
+
+
+async def request_vault_vision_extraction(prompt: str, vision_images: list[str], mime_type: str, *, max_attempts: int = 2) -> tuple[str, int, str]:
+    if not vision_images or not OPENROUTER_API_KEY:
+        return "", 0, "Vision unavailable"
+    last_error = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient() as client:
+                content = [{"type": "text", "text": prompt}]
+                for image_b64 in vision_images:
+                    content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}})
+                payload = {
+                    "model": "openai/gpt-4o",
+                    "messages": [{"role": "user", "content": content}],
+                }
+                headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+                response = await client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=60.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    text = data["choices"][0]["message"]["content"]
+                    if (text or "").strip():
+                        return text, attempt, ""
+                    last_error = "Vision returned empty content"
+                else:
+                    last_error = f"OpenRouter returned {response.status_code}"
+                    logger.warning("AI error: %s %s", response.status_code, response.text)
+        except Exception as exc:
+            last_error = str(exc)
+            logger.exception("AI exception while processing vault upload attempt %s: %s", attempt, exc)
+    return "", max_attempts, last_error
+
+
 def direct_vault_match_answer(docs: list[models.Item]) -> Optional[str]:
     if not docs:
         return None
@@ -1888,8 +1940,6 @@ scheduler.add_job(check_due_reminders_and_notify, CronTrigger(minute="*/5"))
 @app.post("/api/vault_upload")
 async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Company"), db: Session = Depends(get_db)):
     logger.info("Vault upload triggered for %s (%s)", file.filename, file.content_type)
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API key is not configured.")
 
     contents = await file.read()
     mime_type = file.content_type or "application/pdf"
@@ -1926,35 +1976,14 @@ Return ONLY valid JSON with these keys:
 If an expiry date is not explicitly present, use "None". Do not guess dates.
 """
 
-    ocr_text = ""
-    
-    if vision_images:
-        try:
-            async with httpx.AsyncClient() as client:
-                content = [{"type": "text", "text": prompt}]
-                for image_b64 in vision_images:
-                    content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}})
-                payload = {
-                    "model": "openai/gpt-4o",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": content
-                        }
-                    ]
-                }
-                headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-                response = await client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=60.0)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    ocr_text = data["choices"][0]["message"]["content"]
-                else:
-                    logger.warning("AI error: %s %s", response.status_code, response.text)
-        except Exception as e:
-            logger.exception("AI exception while processing vault upload: %s", e)
-
-    extracted = parse_vault_extraction(ocr_text, file.filename, pdf_text)
+    ocr_text, scan_attempts, scan_error = await request_vault_vision_extraction(prompt, vision_images, mime_type)
+    extracted = build_vault_scan_result(
+        ocr_text=ocr_text,
+        filename=file.filename,
+        pdf_text=pdf_text,
+        vision_attempts=scan_attempts,
+        vision_error=scan_error,
+    )
     display_title = preserve_file_extension(file.filename, extracted["document_title"] or file.filename)
     category = extracted["category"] or "Document"
     expiry = extracted["expiry_date"] or "None"
@@ -1966,6 +1995,9 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
             f"Title: {display_title}",
             f"Category: {category}",
             f"Summary: {summary}" if summary else "",
+            f"Scan status: {extracted['scan_status']}",
+            f"Scan attempts: {extracted['scan_attempts']}",
+            f"Scan error: {extracted['scan_error']}" if extracted["scan_error"] else "",
             extracted["full_text"],
             pdf_text,
         ]
@@ -1976,7 +2008,14 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
         type="vault_file",
         title=display_title,
         subtitle=f"{category} • Processed today",
-        body=index_text,
+        body=dump_item_body({
+            "index_text": index_text,
+            "scan_status": extracted["scan_status"],
+            "scan_attempts": extracted["scan_attempts"],
+            "scan_error": extracted["scan_error"],
+            "summary": summary,
+            "full_text": extracted["full_text"],
+        }),
         image_url=image_url,
         workspace=workspace
     )
@@ -1994,7 +2033,7 @@ If an expiry date is not explicitly present, use "None". Do not guess dates.
 
     db.commit()
     logger.info("Vault upload succeeded for %s", file.filename)
-    return {"status": "success"}
+    return {"status": "success", "scan_status": extracted["scan_status"], "scan_attempts": extracted["scan_attempts"]}
 
 class VoiceMemoRequest(BaseModel):
     transcript: str

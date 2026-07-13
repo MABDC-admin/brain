@@ -387,9 +387,23 @@ def test_vault_upload_uses_pdf_text_and_structured_extraction() -> None:
     assert '"full_text"' in backend
     assert "Return ONLY valid JSON" in backend
     assert "pdf_text" in backend
-    assert "body=index_text" in backend
+    assert "build_vault_scan_result" in backend
+    assert "request_vault_vision_extraction" in backend
+    assert '"scan_status"' in backend
+    assert '"scan_attempts"' in backend
+    assert '"scan_error"' in backend
+    assert '"index_text": index_text' in backend
     assert "display_title = preserve_file_extension" in backend
     assert "Original filename:" in backend
+
+
+def test_vault_page_displays_scan_status() -> None:
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    assert "parseVaultBody" in vault
+    assert "scan_status" in vault
+    assert "scan_attempts" in vault
+    assert "scan_error" in vault
+    assert "Fallback OCR" in vault
 
 
 def test_due_reminder_notifications_are_scheduled_and_deduped() -> None:

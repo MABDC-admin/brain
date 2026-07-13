@@ -5,6 +5,15 @@ import SwipeableRow from '../components/SwipeableRow.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 
+function parseVaultBody(file) {
+  try {
+    const parsed = JSON.parse(file.body || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function VaultPage({ workspace }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -340,7 +349,12 @@ export default function VaultPage({ workspace }) {
           </div>
         ) : (
           <div className="space-y-3">
-            {files.map((f) => (
+            {files.map((f) => {
+              const meta = parseVaultBody(f);
+              const scanStatus = meta.scan_status || '';
+              const scanAttempts = meta.scan_attempts || 0;
+              const scanError = meta.scan_error || '';
+              return (
               <SwipeableRow
                 key={f.id}
                 onDelete={() => deleteFile(f.id)}
@@ -364,6 +378,16 @@ export default function VaultPage({ workspace }) {
                           {f.tags}
                         </span>
                       )}
+                      {scanStatus === 'fallback' && !f.is_locked && (
+                        <span className="bg-amber-500/15 text-amber-300 text-[10px] px-2 py-0.5 rounded-full font-bold" title={scanError || 'Vision scan used fallback text'}>
+                          Fallback OCR
+                        </span>
+                      )}
+                      {scanStatus === 'success' && !f.is_locked && (
+                        <span className="bg-emerald-500/15 text-emerald-300 text-[10px] px-2 py-0.5 rounded-full font-bold" title={`Vision attempts: ${scanAttempts}`}>
+                          OCR OK
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-gray-500 mt-0.5">{f.is_locked ? 'Requires PIN to view' : f.subtitle}</p>
                   </div>
@@ -379,7 +403,8 @@ export default function VaultPage({ workspace }) {
                   </div>
                 </div>
               </SwipeableRow>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

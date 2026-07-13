@@ -587,3 +587,34 @@ def test_due_reminder_notifications_are_sent_once_per_day(monkeypatch):
         assert "last_notified_date" in reminder.body
     finally:
         db.close()
+
+
+def test_vault_scan_fallback_status_survives_empty_vision_result():
+    extracted = main.build_vault_scan_result(
+        ocr_text="",
+        filename="fallback-contract.pdf",
+        pdf_text="Labour contract text for Dennis. Expiry: 04 October 2026.",
+        vision_attempts=2,
+        vision_error="OpenRouter timeout",
+    )
+
+    assert extracted["scan_status"] == "fallback"
+    assert extracted["scan_attempts"] == 2
+    assert extracted["scan_error"] == "OpenRouter timeout"
+    assert extracted["document_title"] == "fallback-contract"
+    assert "Labour contract text" in extracted["full_text"]
+
+
+def test_vault_scan_success_status_records_attempt_count():
+    extracted = main.build_vault_scan_result(
+        ocr_text='{"document_title":"Dennis Contract","category":"Contract","expiry_date":"2026-10-04","summary":"Contract summary","full_text":"Vision text"}',
+        filename="fallback-contract.pdf",
+        pdf_text="Embedded text",
+        vision_attempts=1,
+        vision_error="",
+    )
+
+    assert extracted["scan_status"] == "success"
+    assert extracted["scan_attempts"] == 1
+    assert extracted["scan_error"] == ""
+    assert extracted["document_title"] == "Dennis Contract"
