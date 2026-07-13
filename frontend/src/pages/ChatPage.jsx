@@ -37,9 +37,18 @@ function ApprovalCard({ approval, onAction, disabled }) {
       <div className="mt-2 space-y-1 text-[13px] text-gray-100">
         <div><span className="text-gray-400">Action:</span> {approval.action?.replaceAll('_', ' ')}</div>
         {details.document_title && <div><span className="text-gray-400">Document:</span> {details.document_title}</div>}
+        {typeof details.match_confidence === 'number' && (
+          <div><span className="text-gray-400">Match:</span> {Math.round(details.match_confidence * 100)}%</div>
+        )}
+        {details.match_reason && <div className="text-gray-400">{details.match_reason}</div>}
         {details.to && <div><span className="text-gray-400">To:</span> {details.to}</div>}
         {details.subject && <div><span className="text-gray-400">Subject:</span> {details.subject}</div>}
         {details.body && <div className="max-h-24 overflow-y-auto rounded-lg bg-black/20 px-2 py-1 text-gray-200">{details.body}</div>}
+        {details.alternatives?.length > 0 && (
+          <div className="text-gray-300">
+            Alternatives: {details.alternatives.map(item => item.document_title).join(', ')}
+          </div>
+        )}
         {remaining.length > 0 && (
           <div className="pt-1 text-gray-300">
             Then: {remaining.map(step => step.tool?.replaceAll('_', ' ')).filter(Boolean).join(', ')}

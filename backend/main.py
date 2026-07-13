@@ -182,17 +182,81 @@ def normalize_search_text(value: str) -> str:
 
 
 def find_best_vault_document(query: str, db: Session) -> Optional[models.Item]:
-    query_tokens = set(normalize_search_text(query).split())
+    ranked = find_ranked_vault_document_matches(query, db)
+    return ranked[0]["doc"] if ranked else None
+
+
+VAULT_MATCH_STOPWORDS = {
+    "delete", "remove", "trash", "send", "email", "mail", "forward", "rename", "document", "doc", "file", "pdf",
+    "the", "this", "that", "please", "to", "from", "with", "subject", "body", "confirm", "vault", "contract",
+    "example", "com", "mabdc", "brain", "https", "static",
+}
+
+
+def find_ranked_vault_document_matches(query: str, db: Session) -> list[dict]:
+    query_tokens = {
+        token
+        for token in normalize_search_text(query).split()
+        if len(token) > 2 and token not in VAULT_MATCH_STOPWORDS
+    }
+    if not query_tokens:
+        query_tokens = {
+            token
+            for token in normalize_search_text(query).split()
+            if len(token) > 2 and token not in {"the", "this", "that", "please", "to", "from"}
+        }
+    if not query_tokens:
+        return []
     docs = db.query(models.Item).filter(models.Item.type == "vault_file", models.Item.image_url.is_not(None)).all()
-    best_doc = None
-    best_score = 0
+    ranked = []
     for doc in docs:
         haystack = normalize_search_text(" ".join([doc.title or "", doc.subtitle or "", doc.body or "", doc.workspace or ""]))
-        score = sum(1 for token in query_tokens if len(token) > 2 and token in haystack)
-        if score > best_score:
-            best_doc = doc
-            best_score = score
-    return best_doc if best_score > 0 else None
+        matched_tokens = sorted(token for token in query_tokens if token in haystack)
+        score = len(matched_tokens)
+        if score > 0:
+            ranked.append(
+                {
+                    "doc": doc,
+                    "score": score,
+                    "confidence": min(1.0, score / max(len(query_tokens), 1)),
+                    "matched_tokens": matched_tokens,
+                }
+            )
+    return sorted(ranked, key=lambda match: (match["score"], len(match["doc"].title or "")), reverse=True)
+
+
+def vault_match_details(match: dict, alternatives: list[dict] | None = None) -> dict:
+    doc = match["doc"]
+    return {
+        "document_title": doc.title,
+        "document_id": doc.id,
+        "match_confidence": round(float(match.get("confidence") or 0), 2),
+        "match_reason": "Matched tokens: " + ", ".join(match.get("matched_tokens") or []),
+        "alternatives": [
+            {
+                "document_title": alt["doc"].title,
+                "document_id": alt["doc"].id,
+                "match_confidence": round(float(alt.get("confidence") or 0), 2),
+            }
+            for alt in (alternatives or [])[:3]
+        ],
+    }
+
+
+def ambiguous_vault_match_reply(matches: list[dict]) -> dict:
+    names = ", ".join(match["doc"].title for match in matches[:5])
+    return {"reply": f"I found multiple matching vault documents: {names}. Please use a more specific document name."}
+
+
+def resolve_vault_document_match(query: str, db: Session) -> tuple[Optional[dict], Optional[dict]]:
+    ranked = find_ranked_vault_document_matches(query, db)
+    if not ranked:
+        return None, None
+    top_score = ranked[0]["score"]
+    tied = [match for match in ranked if match["score"] == top_score]
+    if len(tied) > 1:
+        return None, ambiguous_vault_match_reply(tied)
+    return ranked[0], None
 
 
 def find_vault_document_by_title(title: str, db: Session) -> Optional[models.Item]:
@@ -592,9 +656,12 @@ def execute_assistant_tool(
         new_title = str(arguments.get("new_title") or "").strip()
         if not query or not new_title:
             return {"reply": "Tell me which document to rename and the new name."}
-        doc = find_best_vault_document(query, db)
-        if not doc:
+        match, match_error = resolve_vault_document_match(query, db)
+        if match_error:
+            return match_error
+        if not match:
             return {"reply": "I could not find which vault document to rename."}
+        doc = match["doc"]
         old_title = doc.title
         doc.title = preserve_file_extension(old_title, new_title)
         db.commit()
@@ -605,9 +672,12 @@ def execute_assistant_tool(
         query = str(arguments.get("query") or "").strip()
         if not query:
             return {"reply": "Tell me the exact vault document to delete."}
-        doc = find_best_vault_document(query, db)
-        if not doc:
+        match, match_error = resolve_vault_document_match(query, db)
+        if match_error:
+            return match_error
+        if not match:
             return {"reply": "I could not find the vault document to delete."}
+        doc = match["doc"]
         approval = create_pending_approval(
             db,
             action=tool_name,
@@ -615,7 +685,7 @@ def execute_assistant_tool(
             target_id=doc.id,
             summary=f"Pending delete {doc.title}",
             request_text=request_text,
-            details={"document_title": doc.title, "document_id": doc.id},
+            details=vault_match_details(match),
             payload={**payload, "document_id": doc.id, "document_title": doc.title},
             remaining_steps=remaining_steps,
         )
@@ -653,9 +723,13 @@ def execute_assistant_tool(
         query = str(arguments.get("query") or "").strip()
         if not EMAIL_RE.fullmatch(to_email) or not query:
             return {"reply": "Tell me which vault document to send and the recipient email."}
-        doc = find_best_vault_document(query, db)
-        if not doc:
+        match, match_error = resolve_vault_document_match(query, db)
+        if match_error:
+            return match_error
+        if not match:
             return {"reply": f"I could not find the vault document to send to {to_email}."}
+        doc = match["doc"]
+        details = {"to": to_email, **vault_match_details(match)}
         approval = create_pending_approval(
             db,
             action=tool_name,
@@ -663,7 +737,7 @@ def execute_assistant_tool(
             target_id=doc.id,
             summary=f"Pending send {doc.title} to {to_email}",
             request_text=request_text,
-            details={"to": to_email, "document_title": doc.title, "document_id": doc.id},
+            details=details,
             payload={**payload, "to": to_email, "document_id": doc.id, "document_title": doc.title},
             remaining_steps=remaining_steps,
         )
@@ -1081,9 +1155,13 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
         content = h.get("content", "") if isinstance(h, dict) else ""
         if content:
             search_parts.append(content)
-    doc = find_best_vault_document(" ".join(search_parts), db)
-    if not doc:
+    match, match_error = resolve_vault_document_match(" ".join(search_parts), db)
+    if match_error:
+        return match_error
+    if not match:
         return {"reply": f"I could not find the vault document to send to {to_email}. Try: send GEMA to {to_email}"}
+    doc = match["doc"]
+    details = {"to": to_email, **vault_match_details(match)}
 
     approval = create_pending_approval(
         db,
@@ -1092,7 +1170,7 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
         target_id=doc.id,
         summary=f"Pending send {doc.title} to {to_email}",
         request_text=message,
-        details={"to": to_email, "document_title": doc.title, "document_id": doc.id},
+        details=details,
         payload={"to": to_email, "document_id": doc.id, "document_title": doc.title},
     )
     return {
@@ -1116,9 +1194,12 @@ def handle_document_rename_request(message: str, history: list, db: Session) -> 
         if content:
             search_parts.append(content)
 
-    doc = find_best_vault_document(" ".join(search_parts), db)
-    if not doc:
+    match, match_error = resolve_vault_document_match(" ".join(search_parts), db)
+    if match_error:
+        return match_error
+    if not match:
         return {"reply": "I could not find which vault document to rename. Try: rename LABOUR CONTRACT to Dennis Labour contract"}
+    doc = match["doc"]
 
     old_title = doc.title
     doc.title = preserve_file_extension(old_title, new_title)
@@ -1247,7 +1328,15 @@ def handle_document_delete_request(message: str, history: list, db: Session) -> 
 
     search_text = message if current_delete_request else previous_delete_request
     confirmed_title = pending_delete_title(history) if phrase_provided else ""
-    doc = find_vault_document_by_title(confirmed_title, db) if confirmed_title else find_best_vault_document(search_text, db)
+    if confirmed_title:
+        doc = find_vault_document_by_title(confirmed_title, db)
+        match = {"doc": doc, "confidence": 1.0, "matched_tokens": ["confirmed"], "score": 1} if doc else None
+        match_error = None
+    else:
+        match, match_error = resolve_vault_document_match(search_text, db)
+        doc = match["doc"] if match else None
+    if match_error:
+        return match_error
     if not doc:
         return {"reply": "I could not find the vault document to delete. Tell me the document name, then I will ask for the security phrase."}
 
@@ -1259,7 +1348,7 @@ def handle_document_delete_request(message: str, history: list, db: Session) -> 
             target_id=doc.id,
             summary=f"Pending delete {doc.title}",
             request_text=message,
-            details={"document_title": doc.title, "document_id": doc.id},
+            details=vault_match_details(match),
             payload={"document_id": doc.id, "document_title": doc.title},
         )
         return {

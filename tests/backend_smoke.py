@@ -460,6 +460,8 @@ def test_assistant_vault_delete_uses_approval_preview(monkeypatch):
     assert "Confirm delete vault document" in draft.json()["reply"]
     assert draft.json()["approval"]["action"] == "delete_vault_document"
     assert draft.json()["approval"]["details"]["document_title"] == "LABOUR CONTRACT.pdf"
+    assert draft.json()["approval"]["details"]["match_confidence"] >= 0.9
+    assert "match_reason" in draft.json()["approval"]["details"]
 
     still_there = client.get("/items/type/vault_file", params={"workspace": "Personal"}).json()
     assert any(item["id"] == item_id for item in still_there)
@@ -504,12 +506,43 @@ def test_assistant_vault_document_email_requires_approval(monkeypatch):
     assert "Confirm send vault document" in draft.json()["reply"]
     assert draft.json()["approval"]["action"] == "send_vault_document_email"
     assert draft.json()["approval"]["details"]["document_title"] == "Jayson NOC.pdf"
+    assert draft.json()["approval"]["details"]["match_confidence"] >= 0.9
     assert sent == []
 
     confirmed = chat(draft.json()["approval"]["confirm_command"])
     assert confirmed.status_code == 200
     assert confirmed.json()["reply"] == "Sent Jayson NOC.pdf to hr@example.com."
     assert sent == [{"to": "hr@example.com", "title": "Jayson NOC.pdf"}]
+
+
+def test_assistant_vault_action_blocks_ambiguous_document_match(monkeypatch):
+    async def fake_plan(message, history):
+        return {
+            "tool": "delete_vault_document",
+            "arguments": {"query": "labour contract"},
+            "confidence": 0.94,
+        }
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+    for title in ["Dennis Labour Contract.pdf", "Jayson Labour Contract.pdf"]:
+        created = client.post(
+            "/items",
+            json={
+                "type": "vault_file",
+                "title": title,
+                "subtitle": "Labour Contract",
+                "workspace": "Personal",
+                "image_url": f"https://brain.mabdc.com/static/{title}",
+            },
+        )
+        assert created.status_code == 200
+
+    response = chat("delete labour contract")
+    assert response.status_code == 200
+    assert "multiple matching vault documents" in response.json()["reply"]
+    assert "Dennis Labour Contract.pdf" in response.json()["reply"]
+    assert "Jayson Labour Contract.pdf" in response.json()["reply"]
+    assert "approval" not in response.json()
 
 
 def test_vault_extraction_normalizes_expiry_and_preserves_search_text():

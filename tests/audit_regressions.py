@@ -196,6 +196,11 @@ def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
     assert 'status = "canceled"' in main
     assert "delete_vault_document" in main
     assert "send_vault_document_email" in main
+    assert "find_ranked_vault_document_matches" in main
+    assert "resolve_vault_document_match" in main
+    assert "ambiguous_vault_match_reply" in main
+    assert "match_confidence" in main
+    assert "match_reason" in main
 
 
 def test_chat_page_renders_structured_approval_controls() -> None:
@@ -206,6 +211,8 @@ def test_chat_page_renders_structured_approval_controls() -> None:
     assert "cancel_command" in chat
     assert "remaining_steps" in chat
     assert "document_title" in chat
+    assert "match_confidence" in chat
+    assert "alternatives" in chat
     assert "ShieldCheck" in chat
 
 
