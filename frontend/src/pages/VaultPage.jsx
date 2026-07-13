@@ -16,6 +16,7 @@ export default function VaultPage({ workspace }) {
   const [asking, setAsking] = useState(false);
   const [recording, setRecording] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, failed: [] });
   const fileInputRef = useRef(null);
   const haptic = useHaptic();
 
@@ -79,29 +80,44 @@ export default function VaultPage({ workspace }) {
   };
 
   const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const selectedFiles = Array.from(e.target.files || []);
+    if (!selectedFiles.length) return;
     setUploading(true);
     setShowUploadModal(false);
     haptic.tap();
-    
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('workspace', targetWorkspace);
+    setUploadProgress({ current: 0, total: selectedFiles.length, failed: [] });
+
+    const failed = [];
+    for (const [index, file] of selectedFiles.entries()) {
+      setUploadProgress({ current: index + 1, total: selectedFiles.length, failed: [...failed] });
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('workspace', targetWorkspace);
+
+      try {
+        const res = await fetch(`${API}/api/vault_upload`, {
+          method: 'POST',
+          body: formData
+        });
+        if (!res.ok) throw new Error('Upload failed');
+      } catch {
+        failed.push(file.name);
+        setUploadProgress({ current: index + 1, total: selectedFiles.length, failed: [...failed] });
+      }
+    }
+
+    if (failed.length) {
+      haptic.error();
+      alert(`${failed.length} file${failed.length === 1 ? '' : 's'} failed: ${failed.join(', ')}`);
+    } else {
+      haptic.success();
+    }
 
     try {
-      const res = await fetch(`${API}/api/vault_upload`, {
-        method: 'POST',
-        body: formData
-      });
-      if (!res.ok) throw new Error('Upload failed');
-      haptic.success();
       load();
-    } catch  {
-      haptic.error();
-      alert('Upload failed. Check backend connection.');
     } finally {
       setUploading(false);
+      setUploadProgress({ current: 0, total: 0, failed: [] });
       e.target.value = '';
     }
   };
@@ -218,7 +234,7 @@ export default function VaultPage({ workspace }) {
               {uploading ? <div className="w-6 h-6 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin"/> : <UploadCloud className="w-6 h-6"/>}
             </button>
           </div>
-          <input type="file" ref={fileInputRef} className="hidden" onChange={handleUpload} accept=".pdf,image/*,.doc,.docx" />
+          <input type="file" ref={fileInputRef} className="hidden" onChange={handleUpload} accept=".pdf,image/*,.doc,.docx" multiple />
         </div>
 
         {/* Upload Modal */}
@@ -229,7 +245,7 @@ export default function VaultPage({ workspace }) {
                 <h3 className="text-lg font-bold text-white">Upload Document</h3>
                 <button onClick={() => setShowUploadModal(false)}><X className="w-5 h-5 text-gray-400"/></button>
               </div>
-              <p className="text-sm text-gray-400 mb-4">Select the workspace for this document. The AI will automatically extract text, categorize it, and set expiry reminders.</p>
+              <p className="text-sm text-gray-400 mb-4">Select the workspace for these documents. Vision scans run one file at a time for reliable extraction and reminders.</p>
               
               <div className="space-y-3 mb-6">
                 {['Personal', 'Company', 'Employee Docs'].map(ws => (
@@ -243,7 +259,7 @@ export default function VaultPage({ workspace }) {
               
               <button onClick={() => fileInputRef.current?.click()}
                 className="w-full py-3.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-bold flex items-center justify-center gap-2">
-                <UploadCloud className="w-5 h-5"/> Select File
+                <UploadCloud className="w-5 h-5"/> Select Files
               </button>
             </div>
           </div>
@@ -260,8 +276,14 @@ export default function VaultPage({ workspace }) {
                 <div className="absolute inset-0 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
                 <Zap className="w-8 h-8 text-indigo-400 animate-pulse" />
               </div>
-              <h3 className="text-xl font-bold text-white mb-2">Analyzing Document</h3>
-              <p className="text-gray-400 text-sm">Vault AI is reading text, auto-categorizing, and securing your file...</p>
+              <h3 className="text-xl font-bold text-white mb-2">Analyzing Documents</h3>
+              <p className="text-indigo-200 text-sm font-semibold mb-2">
+                {uploadProgress.total > 1 ? `Uploading ${uploadProgress.current} of ${uploadProgress.total}` : 'Uploading 1 of 1'}
+              </p>
+              <p className="text-gray-400 text-sm">Vault AI is reading one file at a time, auto-categorizing, and securing your documents...</p>
+              {uploadProgress.failed.length > 0 && (
+                <p className="text-red-300 text-xs mt-3">{uploadProgress.failed.length} failed so far</p>
+              )}
             </div>
           </div>
         )}

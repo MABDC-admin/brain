@@ -261,6 +261,15 @@ def test_vault_uses_in_app_file_preview() -> None:
     assert "window.open(f.image_url, '_blank')" not in vault
 
 
+def test_vault_supports_bulk_sequential_uploads() -> None:
+    vault = read("frontend/src/pages/VaultPage.jsx")
+    assert "multiple" in vault
+    assert "uploadProgress" in vault
+    assert "Array.from(e.target.files" in vault
+    assert "for (const [index, file] of selectedFiles.entries())" in vault
+    assert "Uploading ${uploadProgress.current} of ${uploadProgress.total}" in vault
+
+
 def test_chat_can_send_vault_documents_by_email() -> None:
     backend = read("backend/main.py")
     assert 'EMAIL_RE = re.compile(r"\\b' in backend
@@ -301,6 +310,7 @@ if __name__ == "__main__":
         test_delete_confirmation_uses_shared_ui,
         test_core_command_pages_support_editing_and_dates,
         test_vault_uses_in_app_file_preview,
+        test_vault_supports_bulk_sequential_uploads,
         test_chat_can_send_vault_documents_by_email,
     ]
 
