@@ -1,7 +1,7 @@
 // Command Brain — Service Worker
 // Provides offline caching (cache-first for assets, network-first for API)
 
-const CACHE_NAME = 'cmdbrain-v3';
+const CACHE_NAME = 'cmdbrain-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -21,6 +21,10 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    ).then(() =>
+      clients.matchAll({ type: 'window' }).then((clientList) => {
+        for (const client of clientList) client.navigate(client.url);
+      })
     )
   );
   self.clients.claim(); // Take control of all pages immediately
