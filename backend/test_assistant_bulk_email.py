@@ -17,6 +17,7 @@ def add_vault_doc(db, title, owner="Aimee June Alolor"):
         title=title,
         subtitle=f"ID • {owner} • Processed today",
         body=main.dump_item_body({"owner": owner, "index_text": f"Owner: {owner}"}),
+        image_url=f"/static/{title.replace(' ', '_')}",
     )
     db.add(doc)
     db.commit()
@@ -95,4 +96,50 @@ def test_send_all_filters_duplicate_titles_by_recent_owner_context():
     assert "Please use a more specific document name" not in response["reply"]
     pending = db.query(models.AssistantAudit).filter(models.AssistantAudit.status == "pending").first()
     assert pending is not None
-    assert pending.target_id in {aimee_id.id, aimee_passport.id}
+    payload = main.parse_json_object(pending.payload)
+    assert pending.action == "send_vault_documents_email"
+    assert set(payload["document_ids"]) == {aimee_id.id, aimee_passport.id}
+
+
+def test_send_person_docs_without_prior_filename_list_creates_one_package():
+    db = make_session()
+    add_vault_doc(db, "United Arab Emirates Resident Identity Card.pdf", "Dennis Palen Sotto")
+    docs = [
+        add_vault_doc(db, "United Arab Emirates Resident Identity Card.pdf", "Aimee June Alminza Alolor"),
+        add_vault_doc(db, "Labour Card.jpeg", "Aimee June Alminza Alolor"),
+        add_vault_doc(db, "Passport.jpeg", "Aimee June Alolor"),
+    ]
+
+    response = main.handle_document_email_request("send Aimee docs to sottodennis@gmail.com", [], db)
+
+    assert response is not None
+    assert "Confirm send 3 vault documents" in response["reply"]
+    pending = db.query(models.AssistantAudit).filter(models.AssistantAudit.status == "pending").first()
+    payload = main.parse_json_object(pending.payload)
+    assert pending.action == "send_vault_documents_email"
+    assert set(payload["document_ids"]) == {doc.id for doc in docs}
+
+
+def test_confirm_person_docs_sends_one_email_with_all_documents(monkeypatch):
+    db = make_session()
+    docs = [
+        add_vault_doc(db, "Residence Permit.pdf", "Aimee June Alminza Alolor"),
+        add_vault_doc(db, "Passport.jpeg", "Aimee June Alolor"),
+    ]
+    sent = []
+
+    def fake_send_documents_email(to_email, items):
+        sent.append((to_email, [item.id for item in items]))
+        return True, "sent"
+
+    monkeypatch.setattr(main, "send_documents_email", fake_send_documents_email)
+
+    response = main.handle_document_email_request("send Aimee docs to sottodennis@gmail.com", [], db)
+    token = latest_pending_token(db)
+    confirmed = main.handle_generic_email_request(f"confirm {token}", [], db)
+
+    assert response is not None
+    assert len(sent) == 1
+    assert sent[0][0] == "sottodennis@gmail.com"
+    assert set(sent[0][1]) == {doc.id for doc in docs}
+    assert confirmed["reply"] == "Sent 2 vault documents to sottodennis@gmail.com with attachments."

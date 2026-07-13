@@ -258,6 +258,7 @@ async def auth_logout(response: Response):
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 SEND_WORD_RE = re.compile(r"\b(send|email|mail|forward)\b", re.IGNORECASE)
+ALL_DOCUMENTS_RE = re.compile(r"\b(all|every|complete|entire|documents|docs|files|attachments)\b", re.IGNORECASE)
 DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
 DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
 OCR_WORD_RE = re.compile(r"\b(?:ocr|scan|rescan|re-scan|read document|read file)\b", re.IGNORECASE)
@@ -345,6 +346,13 @@ ASSISTANT_TOOLS = [
         "risk_level": 3,
         "requires_confirmation": False,
         "parameters": {"query": "string", "to": "email"},
+    },
+    {
+        "name": "send_vault_documents_email",
+        "description": "Send all matching vault documents for a person in one email with attachments.",
+        "risk_level": 3,
+        "requires_confirmation": True,
+        "parameters": {"document_ids": "list of vault document IDs", "to": "email"},
     },
     {
         "name": "save_contact",
@@ -493,6 +501,16 @@ def filter_vault_documents_by_owner_context(docs: list[models.Item], query: str)
     if not scored:
         return docs
     return [doc for _score, doc in scored]
+
+
+def find_vault_documents_by_owner_context(query: str, db: Session) -> list[models.Item]:
+    docs = (
+        db.query(models.Item)
+        .filter(models.Item.type == "vault_file", models.Item.image_url.is_not(None))
+        .order_by(models.Item.created_at.desc())
+        .all()
+    )
+    return filter_vault_documents_by_owner_context(docs, query)
 
 
 def resolve_vault_document_match(query: str, db: Session) -> tuple[Optional[dict], Optional[dict]]:
@@ -733,12 +751,14 @@ def email_audit_to_dict(row: models.AssistantAudit) -> dict:
     return {
         **audit_to_dict(row),
         "to": payload.get("to", ""),
-        "subject": payload.get("subject") or payload.get("document_title") or "",
+        "subject": payload.get("subject") or payload.get("document_title") or payload.get("package_title") or "",
         "body": payload.get("body", ""),
         "document_id": payload.get("document_id"),
         "document_title": payload.get("document_title", ""),
+        "document_ids": payload.get("document_ids") or [],
+        "document_titles": payload.get("document_titles") or [],
         "delivery_detail": payload.get("delivery_detail") or row.summary or "",
-        "can_resend": row.status == "completed" and row.action in {"send_email", "send_vault_document_email", "resend_email"},
+        "can_resend": row.status == "completed" and row.action in {"send_email", "send_vault_document_email", "send_vault_documents_email", "resend_email"},
     }
 
 
@@ -1040,6 +1060,38 @@ def execute_assistant_tool(
             "approval": approval,
         }
 
+    if tool_name == "send_vault_documents_email":
+        to_email = str(arguments.get("to") or "").strip()
+        document_ids = arguments.get("document_ids") or []
+        if not EMAIL_RE.fullmatch(to_email) or not isinstance(document_ids, list):
+            return {"reply": "Tell me which vault documents to send and the recipient email."}
+        docs = selected_vault_documents(document_ids, db)
+        if not docs:
+            return {"reply": f"I could not find the vault documents to send to {to_email}."}
+        package_title = owner_display_for_documents(docs)
+        details = {
+            "to": to_email,
+            "package_title": package_title,
+            "document_count": len(docs),
+            "document_ids": [doc.id for doc in docs],
+            "document_titles": [doc.title for doc in docs],
+        }
+        approval = create_pending_approval(
+            db,
+            action=tool_name,
+            target_type="vault_file",
+            target_id=docs[0].id,
+            summary=f"Pending send {len(docs)} vault documents to {to_email}",
+            request_text=request_text,
+            details=details,
+            payload={**payload, **details},
+            remaining_steps=remaining_steps,
+        )
+        return {
+            "reply": f"Confirm send {len(docs)} vault documents for {package_title} to {to_email}? Reply `confirm {approval['token']}` to send.",
+            "approval": approval,
+        }
+
     return None
 
 
@@ -1105,7 +1157,7 @@ def read_assistant_audit(limit: int = 50, db: Session = Depends(get_db)):
 def read_email_audit(limit: int = 50, db: Session = Depends(get_db)):
     rows = (
         db.query(models.AssistantAudit)
-        .filter(models.AssistantAudit.action.in_(["send_email", "send_vault_document_email", "resend_email"]))
+        .filter(models.AssistantAudit.action.in_(["send_email", "send_vault_document_email", "send_vault_documents_email", "resend_email"]))
         .order_by(models.AssistantAudit.created_at.desc())
         .limit(min(max(limit, 1), 200))
         .all()
@@ -1116,7 +1168,7 @@ def read_email_audit(limit: int = 50, db: Session = Depends(get_db)):
 @app.post("/api/email/audit/{audit_id}/resend")
 def resend_email_from_audit(audit_id: int, db: Session = Depends(get_db)):
     row = db.query(models.AssistantAudit).filter(models.AssistantAudit.id == audit_id).first()
-    if not row or row.action not in {"send_email", "send_vault_document_email", "resend_email"}:
+    if not row or row.action not in {"send_email", "send_vault_document_email", "send_vault_documents_email", "resend_email"}:
         raise HTTPException(status_code=404, detail="Email audit entry not found")
     payload = parse_json_object(row.payload or "{}") or {}
 
@@ -1129,6 +1181,15 @@ def resend_email_from_audit(audit_id: int, db: Session = Depends(get_db)):
         summary = f"Resent {doc.title} to {payload.get('to', 'recipient')}" if ok else f"Resend failed: {detail}"
         target_type = "vault_file"
         target_id = doc.id
+    elif row.action == "send_vault_documents_email":
+        docs = selected_vault_documents(payload.get("document_ids") or [], db)
+        if not docs:
+            raise HTTPException(status_code=404, detail="Vault documents no longer exist")
+        ok, detail = send_documents_email(str(payload.get("to") or ""), docs)
+        resend_payload = {**payload, "delivery_detail": detail, "source_audit_id": audit_id}
+        summary = f"Resent {len(docs)} vault documents to {payload.get('to', 'recipient')}" if ok else f"Resend failed: {detail}"
+        target_type = "vault_file"
+        target_id = docs[0].id
     else:
         ok, detail = send_generic_email(str(payload.get("to") or ""), str(payload.get("subject") or ""), str(payload.get("body") or ""))
         resend_payload = {**payload, "delivery_detail": detail, "source_audit_id": audit_id}
@@ -1373,83 +1434,128 @@ def update_vault_metadata(item_id: int, payload: VaultMetadataUpdate, db: Sessio
     return item
 
 
-def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
+def email_attachment_for_document(item: models.Item) -> Optional[dict]:
+    if not item.image_url:
+        return None
+    filename_on_disk = item.image_url.split("/")[-1]
+    filepath = os.path.join("uploads", filename_on_disk)
+    if not os.path.exists(filepath):
+        return None
+    try:
+        with open(filepath, "rb") as f:
+            content = base64.b64encode(f.read()).decode("utf-8")
+        display_filename = item.title or filename_on_disk
+        if "." not in display_filename and "." in filename_on_disk:
+            display_filename += "." + filename_on_disk.split(".")[-1]
+        return {"filename": display_filename, "content": content}
+    except Exception as exc:
+        logger.error("Failed to attach file to email for %s: %s", item.title, exc)
+        return None
+
+
+def vault_document_url(item: models.Item) -> str:
+    return f"{PUBLIC_BASE_URL}/shared/{item.share_token}" if item.share_token else (item.image_url or "")
+
+
+def owner_display_for_documents(items: list[models.Item]) -> str:
+    owners = []
+    seen = set()
+    for item in items:
+        body = parse_item_body(item)
+        owner = str(body.get("owner") or "").strip()
+        normalized = normalize_search_text(owner)
+        if owner and normalized not in seen:
+            owners.append(owner)
+            seen.add(normalized)
+    if not owners:
+        return "your requested person"
+    if len(owners) == 1:
+        return owners[0]
+    owner_token_sets = [
+        {token for token in normalize_search_text(owner).split() if len(token) > 2 and token not in OWNER_TOKEN_STOPWORDS}
+        for owner in owners
+    ]
+    shared_tokens = set.intersection(*owner_token_sets) if owner_token_sets else set()
+    if shared_tokens:
+        return max(owners, key=lambda owner: len(normalize_search_text(owner).split()))
+    return "your requested person"
+
+
+def vault_email_html(items: list[models.Item]) -> str:
+    safe_owner = html.escape(owner_display_for_documents(items))
+    count = len(items)
+    heading = "Secure Document Transfer" if count == 1 else "Secure Document Package"
+    intro = (
+        "A document from the AI Vault has been securely shared with you."
+        if count == 1
+        else f"{count} documents for {safe_owner} have been securely shared with you."
+    )
+    rows = []
+    for index, item in enumerate(items, start=1):
+        safe_title = html.escape(item.title or f"Document {index}")
+        safe_subtitle = html.escape(item.subtitle or "Vault document")
+        safe_url = html.escape(vault_document_url(item))
+        rows.append(f"""
+            <tr>
+                <td style="padding: 14px 0; border-bottom: 1px solid #eef2ff;" width="42">
+                    <div style="background: #eef2ff; color: #4f46e5; width: 32px; height: 32px; border-radius: 10px; text-align: center; line-height: 32px; font-weight: 800;">{index}</div>
+                </td>
+                <td style="padding: 14px 10px; border-bottom: 1px solid #eef2ff;">
+                    <div style="color: #111827; font-size: 15px; font-weight: 800; word-break: break-word;">{safe_title}</div>
+                    <div style="color: #64748b; font-size: 12px; margin-top: 3px;">{safe_subtitle}</div>
+                </td>
+                <td style="padding: 14px 0; border-bottom: 1px solid #eef2ff; text-align: right;">
+                    <a href="{safe_url}" style="color: #7c3aed; font-size: 12px; font-weight: 800; text-decoration: none;">Open</a>
+                </td>
+            </tr>
+        """)
+    return f"""
+    <div style="font-family: Inter, Helvetica, Arial, sans-serif; max-width: 680px; margin: 0 auto; background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 42%, #ecfdf5 100%); padding: 38px; border-radius: 22px;">
+        <div style="background: #ffffff; border-radius: 22px; padding: 36px; box-shadow: 0 18px 50px rgba(15,23,42,0.10); border: 1px solid #e5e7eb;">
+            <div style="text-align: center;">
+                <div style="background: linear-gradient(90deg, #4f46e5, #d946ef); color: #ffffff; display: inline-block; padding: 8px 22px; border-radius: 999px; font-weight: 900; font-size: 13px; letter-spacing: 1.2px;">MABDC VAULT</div>
+                <h1 style="color: #1e1b4b; margin: 24px 0 12px; font-size: 30px; line-height: 1.1; font-weight: 900;">{heading}</h1>
+                <p style="color: #475569; font-size: 16px; line-height: 1.6; margin: 0 0 28px;">{intro}</p>
+            </div>
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 18px 20px; margin-bottom: 26px;">
+                <div style="color: #334155; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 900; margin-bottom: 10px;">Attached documents</div>
+                <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">{''.join(rows)}</table>
+            </div>
+            <div style="background: #ecfdf5; border: 1px solid #bbf7d0; color: #065f46; border-radius: 14px; padding: 14px 16px; font-size: 14px; line-height: 1.5;">
+                Files are attached to this email. Secure online links are also included for quick access.
+            </div>
+        </div>
+        <p style="text-align: center; color: #64748b; font-size: 12px; margin-top: 22px;">Automated secure message sent by Command Brain AI.<br/>MABDC AI Systems</p>
+    </div>
+    """
+
+
+def send_documents_email(to_email: str, items: list[models.Item]) -> tuple[bool, str]:
     MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
     if not MABDC_MAIL_API_KEY:
         return False, "Mail API key is not configured on the backend."
-    if not item.image_url:
-        return False, "That document does not have a file link yet."
-
-    safe_title = html.escape(item.title or "Vault document")
-    document_url = f"{PUBLIC_BASE_URL}/shared/{item.share_token}" if item.share_token else item.image_url
-    safe_url = html.escape(document_url)
+    sendable_items = [item for item in items if item and item.image_url]
+    if not sendable_items:
+        return False, "No sendable vault documents were found."
+    attachments = [
+        attachment
+        for attachment in (email_attachment_for_document(item) for item in sendable_items)
+        if attachment
+    ]
+    subject_name = owner_display_for_documents(sendable_items) if len(sendable_items) > 1 else (sendable_items[0].title or "Vault document")
+    subject = (
+        f"Vault Secure Transfer: {subject_name}"
+        if len(sendable_items) == 1
+        else f"Vault Secure Transfer: {subject_name} document package"
+    )
     payload = {
         "to": to_email,
         "from": "vault-ai@mabdc.org",
-        "subject": f"Vault Secure Transfer: {item.title}",
-        "html": f"""
-        <div style="font-family: 'Inter', Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #ffcce6 0%, #e6ccff 30%, #ccffff 70%, #ccffcc 100%); padding: 40px; border-radius: 16px;">
-            <div style="background-color: #ffffff; border-radius: 20px; padding: 40px; box-shadow: 0 10px 40px rgba(0,0,0,0.08); text-align: center; border: 1px solid #f3f4f6;">
-                
-                <div style="background: linear-gradient(90deg, #6366f1, #d946ef); color: #ffffff; display: inline-block; padding: 8px 24px; border-radius: 24px; font-weight: 800; margin-bottom: 30px; font-size: 14px; letter-spacing: 1px;">
-                    MABDC
-                </div>
-                
-                <h1 style="color: #2e1065; margin: 0 0 15px 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">Secure Document<br>Transfer</h1>
-                
-                <p style="color: #475569; font-size: 17px; line-height: 1.6; margin-bottom: 35px; font-weight: 500;">
-                    Hello! A document from the <span style="color: #e11d48; font-weight: 700;">AI</span> <span style="color: #059669; font-weight: 700;">Vault</span> has been securely shared with you.
-                </p>
-                
-                <div style="background-color: #ffffff; border: 1px solid #d8b4e2; padding: 16px; margin-bottom: 35px; text-align: left; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
-                    <table width="100%" cellpadding="0" cellspacing="0" style="border: none;">
-                        <tr>
-                            <td width="50" valign="middle">
-                                <div style="background-color: #f1f5f9; width: 40px; height: 40px; border-radius: 8px; text-align: center; line-height: 40px; font-size: 22px;">
-                                    📄
-                                </div>
-                            </td>
-                            <td valign="middle" style="padding-left: 10px;">
-                                <div style="color: #0369a1; font-weight: 700; font-size: 15px; margin-bottom: 4px; word-break: break-word;">{safe_title}</div>
-                                <div style="color: #16a34a; font-size: 13px; font-weight: 500;">Securely attached • Command Brain</div>
-                            </td>
-                        </tr>
-                    </table>
-                </div>
-                
-                <a href="{safe_url}" style="background: linear-gradient(90deg, #7c3aed, #10b981); color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 24px; font-weight: 700; display: inline-block; font-size: 16px; box-shadow: 0 8px 16px rgba(124, 58, 237, 0.25); width: 80%; text-align: center;">
-                    Access Document Online 🔗
-                </a>
-                
-            </div>
-            <p style="text-align: center; color: #64748b; font-size: 12px; margin-top: 25px;">
-                Automated secure message sent by Command Brain AI.<br/>
-                MABDC AI Systems
-            </p>
-        </div>
-        """,
+        "subject": subject,
+        "html": vault_email_html(sendable_items),
     }
-
-    # Attach the file from disk if it exists
-    filename_on_disk = item.image_url.split('/')[-1]
-    filepath = os.path.join("uploads", filename_on_disk)
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "rb") as f:
-                b64_content = base64.b64encode(f.read()).decode("utf-8")
-                
-                display_filename = item.title or filename_on_disk
-                if "." not in display_filename and "." in filename_on_disk:
-                    display_filename += "." + filename_on_disk.split(".")[-1]
-                    
-                payload["attachments"] = [
-                    {
-                        "filename": display_filename,
-                        "content": b64_content
-                    }
-                ]
-        except Exception as e:
-            logger.error(f"Failed to attach file to email: {e}")
+    if attachments:
+        payload["attachments"] = attachments
     try:
         resp = httpx.post(
             "https://api-mail.mabdc.com/v1/emails",
@@ -1464,6 +1570,10 @@ def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
     except Exception as exc:
         logger.exception("Document email failed: %s", exc)
         return False, "Mail delivery failed."
+
+
+def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
+    return send_documents_email(to_email, [item])
 
 
 def send_generic_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
@@ -1601,6 +1711,9 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
         elif pending.action == "send_vault_document_email":
             pending.summary = f"Canceled vault document email to {payload.get('to', 'recipient')}"
             reply = f"Canceled pending vault document email to {payload.get('to', 'recipient')}."
+        elif pending.action == "send_vault_documents_email":
+            pending.summary = f"Canceled vault document package email to {payload.get('to', 'recipient')}"
+            reply = f"Canceled pending vault document package email to {payload.get('to', 'recipient')}."
         else:
             pending.summary = f"Canceled email to {payload.get('to', 'recipient')}"
             reply = f"Canceled pending email to {payload.get('to', 'recipient')}."
@@ -1667,6 +1780,28 @@ def handle_generic_email_request(message: str, history: list, db: Session) -> Op
             db.commit()
             return {"reply": f"I could not send the vault document: {detail}"}
 
+        if pending.action == "send_vault_documents_email":
+            docs = selected_vault_documents(payload.get("document_ids") or [], db)
+            if not docs:
+                pending.status = "failed"
+                pending.summary = "Vault documents no longer exist"
+                db.commit()
+                return {"reply": "I could not send them because the vault documents no longer exist."}
+            ok, detail = send_documents_email(payload["to"], docs)
+            payload["delivery_detail"] = detail
+            payload["document_ids"] = [doc.id for doc in docs]
+            payload["document_titles"] = [doc.title for doc in docs]
+            pending.payload = json.dumps(payload, ensure_ascii=False)
+            if ok:
+                pending.status = "completed"
+                pending.summary = f"Sent {len(docs)} vault documents to {payload['to']}"
+                db.commit()
+                return {"reply": f"Sent {len(docs)} vault documents to {payload['to']} with attachments."}
+            pending.status = "failed"
+            pending.summary = f"Vault document package email failed: {detail}"
+            db.commit()
+            return {"reply": f"I could not send the vault documents: {detail}"}
+
         ok, detail = send_generic_email(payload["to"], payload["subject"], payload["body"])
         payload["delivery_detail"] = detail
         pending.payload = json.dumps(payload, ensure_ascii=False)
@@ -1723,20 +1858,25 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
             search_parts.append(content)
             
     query = " ".join(search_parts).lower()
+    wants_document_package = bool(ALL_DOCUMENTS_RE.search(message or ""))
     
-    # 1. Extract all documents that were explicitly mentioned in the recent chat/history
+    # 1. Prefer owner/person context for package requests like "send Aimee docs".
+    mentioned_docs = find_vault_documents_by_owner_context(query, db) if wants_document_package else []
+
+    # 2. Extract all documents that were explicitly mentioned in the recent chat/history
     all_docs = db.query(models.Item).filter(models.Item.type == "vault_file").all()
-    mentioned_docs = [d for d in all_docs if d.title and len(d.title) > 3 and d.title.lower() in query]
+    if not mentioned_docs:
+        mentioned_docs = [d for d in all_docs if d.title and len(d.title) > 3 and d.title.lower() in query]
     if len(mentioned_docs) > 1:
         mentioned_docs = filter_vault_documents_by_owner_context(mentioned_docs, query)
     
-    # 2. Check if the user's immediate message narrows it down to a single specific doc
+    # 3. Check if the user's immediate message narrows it down to a single specific doc
     user_query = search_parts[0].lower().strip()
     explicit_match = [d for d in mentioned_docs if d.title.lower() in user_query]
-    if len(explicit_match) == 1:
+    if len(explicit_match) == 1 and not wants_document_package:
         mentioned_docs = explicit_match
         
-    # 3. Fallback to AI semantic matching if no explicit titles were found
+    # 4. Fallback to AI semantic matching if no explicit titles were found
     if not mentioned_docs:
         match, match_error = resolve_vault_document_match(query, db)
         if match_error:
@@ -1745,16 +1885,33 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
             return {"reply": f"I could not find the vault document to send to {to_email}. Try: send GEMA to {to_email}"}
         mentioned_docs = [match["doc"]]
         
-    # 4. If multiple documents are matched (e.g. user said "send them all"), chain them in an AI plan
+    # 5. If multiple documents are matched, send one package email with all attachments.
     if len(mentioned_docs) > 1:
-        steps = [
-            {
-                "tool": "send_vault_document_email",
-                "arguments": {"to": to_email, "query": d.title, "document_id": d.id},
-            }
-            for d in mentioned_docs
-        ]
-        return execute_assistant_plan({"steps": steps}, message, db)
+        docs = [doc for doc in mentioned_docs if doc.image_url]
+        if not docs:
+            return {"reply": f"I could not find sendable vault documents for {to_email}."}
+        package_title = owner_display_for_documents(docs)
+        details = {
+            "to": to_email,
+            "package_title": package_title,
+            "document_count": len(docs),
+            "document_ids": [doc.id for doc in docs],
+            "document_titles": [doc.title for doc in docs],
+        }
+        approval = create_pending_approval(
+            db,
+            action="send_vault_documents_email",
+            target_type="vault_file",
+            target_id=docs[0].id if docs else None,
+            summary=f"Pending send {len(docs)} vault documents to {to_email}",
+            request_text=message,
+            details=details,
+            payload=details,
+        )
+        return {
+            "reply": f"Confirm send {len(docs)} vault documents for {package_title} to {to_email}? Reply `confirm {approval['token']}` to send.",
+            "approval": approval,
+        }
 
     doc = mentioned_docs[0]
     # For single document, create the approval directly (faster, skips tool execution loop)
