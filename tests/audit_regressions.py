@@ -270,6 +270,16 @@ def test_vault_supports_bulk_sequential_uploads() -> None:
     assert "Uploading ${uploadProgress.current} of ${uploadProgress.total}" in vault
 
 
+def test_search_page_has_no_mock_recent_searches() -> None:
+    search = read("frontend/src/pages/SearchPage.jsx")
+    assert "RECENT_SEARCHES" not in search
+    assert "expenses this month" not in search
+    assert "notes about Acme" not in search
+    assert "tax return" not in search
+    assert "meeting with Maria" not in search
+    assert "Recent searches" not in search
+
+
 def test_vault_deletion_requires_security_phrase() -> None:
     vault = read("frontend/src/pages/VaultPage.jsx")
     dialog = read("frontend/src/components/DeleteConfirmationProvider.jsx")
@@ -340,6 +350,7 @@ if __name__ == "__main__":
         test_core_command_pages_support_editing_and_dates,
         test_vault_uses_in_app_file_preview,
         test_vault_supports_bulk_sequential_uploads,
+        test_search_page_has_no_mock_recent_searches,
         test_vault_deletion_requires_security_phrase,
         test_chat_can_delete_vault_documents_after_phrase,
         test_chat_can_send_vault_documents_by_email,

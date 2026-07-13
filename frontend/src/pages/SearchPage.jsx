@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Search, Mic, Clock, ArrowUpRight, X } from 'lucide-react';
+import { Search, Mic, ArrowUpRight, X } from 'lucide-react';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const FILTERS = ['Tasks', 'Notes', 'Expenses', 'Reminders', 'Vault'];
 const TYPE_MAP = { Tasks: 'task', Notes: 'note', Expenses: 'expense', Reminders: 'reminder', Vault: 'vault_file' };
-const RECENT_SEARCHES = ['expenses this month', 'notes about Acme', 'tax return', 'meeting with Maria'];
 
 export default function SearchPage({ items }) {
   const location = useLocation();
@@ -132,23 +131,8 @@ export default function SearchPage({ items }) {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto scrollbar-hide">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Recent searches</p>
-          <div className="space-y-0">
-            {RECENT_SEARCHES.map((r, i) => (
-              <button key={i} onClick={() => setQuery(r)}
-                className="w-full flex items-center justify-between py-4 border-b border-[#1a1b23] last:border-0 text-left hover:bg-[#14151b] px-2 rounded-xl transition-colors group">
-                <div className="flex items-center space-x-3">
-                  <Clock className="w-5 h-5 text-gray-600 group-hover:text-gray-400 transition-colors"/>
-                  <span className="text-gray-300 text-[15px]">{r}</span>
-                </div>
-                <ArrowUpRight className="w-4 h-4 text-gray-600 group-hover:text-indigo-400 transition-colors"/>
-              </button>
-            ))}
-          </div>
-
-          {/* All Items Preview */}
           {allItems.length > 0 && (
-            <div className="mt-4">
+            <div>
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">All items ({allItems.length})</p>
               <div className="space-y-2">
                 {allItems.slice(0, 5).map((item, i) => (
@@ -163,6 +147,14 @@ export default function SearchPage({ items }) {
                   <p className="text-gray-600 text-center text-sm pt-1">+{allItems.length - 5} more — start typing to search</p>
                 )}
               </div>
+            </div>
+          )}
+
+          {allItems.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+              <Search className="w-12 h-12 mb-3 opacity-30"/>
+              <p className="font-semibold text-gray-400">Nothing to search yet</p>
+              <p className="text-sm mt-1">Add tasks, notes, expenses, reminders, or vault files.</p>
             </div>
           )}
         </div>
