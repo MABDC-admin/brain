@@ -461,6 +461,40 @@ def ambiguous_vault_match_reply(matches: list[dict]) -> dict:
     return {"reply": f"I found multiple matching vault documents: {names}. Please use a more specific document name."}
 
 
+OWNER_TOKEN_STOPWORDS = {
+    "id", "ocr", "success", "processed", "today", "document", "employment", "employee", "contract",
+    "visa", "passport", "card", "labour", "labor", "resident", "identity", "permit", "pdf", "jpeg",
+    "jpg", "png", "none", "unknown",
+}
+
+
+def owner_context_tokens(doc: models.Item) -> set[str]:
+    body = parse_item_body(doc)
+    owner = str(body.get("owner") or "").strip()
+    parts = [owner] if owner else []
+    if doc.subtitle:
+        parts.append(doc.subtitle)
+    tokens = set(normalize_search_text(" ".join(parts)).split())
+    return {token for token in tokens if len(token) > 2 and token not in OWNER_TOKEN_STOPWORDS}
+
+
+def filter_vault_documents_by_owner_context(docs: list[models.Item], query: str) -> list[models.Item]:
+    query_tokens = set(normalize_search_text(query).split())
+    if not query_tokens:
+        return docs
+    scored = []
+    for doc in docs:
+        owner_tokens = owner_context_tokens(doc)
+        if not owner_tokens:
+            continue
+        overlap = owner_tokens & query_tokens
+        if overlap:
+            scored.append((len(overlap), doc))
+    if not scored:
+        return docs
+    return [doc for _score, doc in scored]
+
+
 def resolve_vault_document_match(query: str, db: Session) -> tuple[Optional[dict], Optional[dict]]:
     ranked = find_ranked_vault_document_matches(query, db)
     if not ranked:
@@ -968,14 +1002,27 @@ def execute_assistant_tool(
     if tool_name == "send_vault_document_email":
         to_email = str(arguments.get("to") or "").strip()
         query = str(arguments.get("query") or "").strip()
-        if not EMAIL_RE.fullmatch(to_email) or not query:
+        document_id = arguments.get("document_id")
+        if not EMAIL_RE.fullmatch(to_email) or (not query and not document_id):
             return {"reply": "Tell me which vault document to send and the recipient email."}
-        match, match_error = resolve_vault_document_match(query, db)
-        if match_error:
-            return match_error
-        if not match:
-            return {"reply": f"I could not find the vault document to send to {to_email}."}
-        doc = match["doc"]
+        doc = None
+        match = None
+        if document_id:
+            try:
+                doc_id = int(document_id)
+            except (TypeError, ValueError):
+                doc_id = 0
+            doc = db.query(models.Item).filter(models.Item.id == doc_id, models.Item.type == "vault_file").first()
+            if not doc:
+                return {"reply": f"I could not find the vault document to send to {to_email}."}
+            match = {"doc": doc, "score": 100.0, "confidence": 1.0, "matched_tokens": ["document id"]}
+        else:
+            match, match_error = resolve_vault_document_match(query, db)
+            if match_error:
+                return match_error
+            if not match:
+                return {"reply": f"I could not find the vault document to send to {to_email}."}
+            doc = match["doc"]
         details = {"to": to_email, **vault_match_details(match)}
         approval = create_pending_approval(
             db,
@@ -1680,6 +1727,8 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
     # 1. Extract all documents that were explicitly mentioned in the recent chat/history
     all_docs = db.query(models.Item).filter(models.Item.type == "vault_file").all()
     mentioned_docs = [d for d in all_docs if d.title and len(d.title) > 3 and d.title.lower() in query]
+    if len(mentioned_docs) > 1:
+        mentioned_docs = filter_vault_documents_by_owner_context(mentioned_docs, query)
     
     # 2. Check if the user's immediate message narrows it down to a single specific doc
     user_query = search_parts[0].lower().strip()
@@ -1698,7 +1747,13 @@ def handle_document_email_request(message: str, history: list, db: Session) -> O
         
     # 4. If multiple documents are matched (e.g. user said "send them all"), chain them in an AI plan
     if len(mentioned_docs) > 1:
-        steps = [{"tool": "send_vault_document_email", "arguments": {"to": to_email, "query": d.title}} for d in mentioned_docs]
+        steps = [
+            {
+                "tool": "send_vault_document_email",
+                "arguments": {"to": to_email, "query": d.title, "document_id": d.id},
+            }
+            for d in mentioned_docs
+        ]
         return execute_assistant_plan({"steps": steps}, message, db)
 
     doc = mentioned_docs[0]
