@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Home, Search, Plus, Settings, CheckCircle2, Bell, Wallet, FileText, Camera, Images } from 'lucide-react';
 import CommandPreview from './components/CommandPreview.jsx';
+import { useWebSocket } from './hooks/useWebSocket.jsx';
 
 const FAB_OPTIONS = [
   { type: 'task',     label: 'Task',     icon: CheckCircle2, color: 'bg-green-500',  hint: 'Add something to do' },
@@ -25,6 +26,9 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
     { icon: Settings, label: 'Settings', to: '/settings', badge: null },
   ];
 
+  const wsUrl = `ws://${window.location.hostname}:8001/ws/status`;
+  const { isConnected, messages } = useWebSocket(wsUrl);
+
   const handleFabOption = (opt) => {
     setFabOpen(false);
     setPreview({ type: opt.type, rest: '', text: `/${opt.type} `, cmd: `/${opt.type}` });
@@ -44,6 +48,17 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
         <div className="flex justify-between items-center px-7 pt-4 pb-2 text-sm font-semibold shrink-0 z-10" style={{ color: 'var(--text-primary)' }}>
           <div className="flex items-center gap-2">
             <span className="text-gray-400 text-xs">{(new Date()).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
+            {isConnected ? (
+              <div className="flex items-center gap-1 bg-green-500/10 px-1.5 py-0.5 rounded border border-green-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                <span className="text-[9px] text-green-500 font-bold tracking-wider">LIVE</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                <span className="text-[9px] text-red-500 font-bold tracking-wider">OFFLINE</span>
+              </div>
+            )}
           </div>
           
           <div className="relative z-50">
@@ -75,7 +90,7 @@ export default function Layout({ children, isScanning, fileInputRef, onFileChang
         </div>
 
         {/* Bottom Navigation */}
-        <div className="absolute bottom-0 left-0 right-0 h-[88px] bg-[#0b0c10]/95 backdrop-blur-sm flex justify-between items-center px-6 pb-6 pt-2 z-30 border-t border-[#1a1b23]">
+        <div className="absolute bottom-0 left-0 right-0 h-[88px] bg-[#0b0c10]/80 backdrop-blur-2xl flex justify-between items-center px-6 pb-6 pt-2 z-30 border-t border-white/5 shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.7)]">
           {navItems.slice(0, 2).map(({ icon: Icon, label, to, badge }) => {
             const active = path === to;
             const isSearch = label === 'Search';

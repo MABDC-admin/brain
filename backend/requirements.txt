@@ -8,3 +8,8 @@ python-multipart
 PyMuPDF
 apscheduler
 pytest
+psycopg2-binary
+celery
+redis
+pgvector
+litellm

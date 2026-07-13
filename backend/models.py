@@ -2,6 +2,11 @@ from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from database import Base
 import datetime
 
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    Vector = String  # Fallback for sqlite
+
 class Item(Base):
     __tablename__ = "items"
 
@@ -17,6 +22,7 @@ class Item(Base):
     tags = Column(String, nullable=True)
     share_token = Column(String, nullable=True, index=True)
     share_expires_at = Column(DateTime, nullable=True)
+    embedding = Column(Vector(1536), nullable=True)  # OpenAI standard dimensions
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 

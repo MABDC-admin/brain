@@ -13,7 +13,7 @@ import shutil
 import tarfile
 import uuid
 
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query, Response
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -22,8 +22,9 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import httpx
 import base64
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+from celery_app import celery_app
+from embeddings import generate_embedding
+from llm import call_llm_async
 
 import fitz
 from dotenv import load_dotenv
@@ -55,18 +56,16 @@ from routers.items import router as items_router
 
 models.Base.metadata.create_all(bind=engine)
 
-scheduler = BackgroundScheduler()
+# scheduler = BackgroundScheduler() (replaced by celery)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not scheduler.running:
-        scheduler.start()
+    # APScheduler removed; Celery worker runs independently
     try:
         yield
     finally:
-        if scheduler.running:
-            scheduler.shutdown()
+        pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -83,6 +82,36 @@ os.makedirs("uploads", exist_ok=True)
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
 app.include_router(items_router)
 
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/status")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 class LoginRequest(BaseModel):
     email: str
@@ -334,34 +363,45 @@ VAULT_MATCH_STOPWORDS = {
 
 
 def find_ranked_vault_document_matches(query: str, db: Session) -> list[dict]:
-    query_tokens = {
-        token
-        for token in normalize_search_text(query).split()
-        if len(token) > 2 and token not in VAULT_MATCH_STOPWORDS
-    }
-    if not query_tokens:
-        query_tokens = {
-            token
-            for token in normalize_search_text(query).split()
-            if len(token) > 2 and token not in {"the", "this", "that", "please", "to", "from"}
-        }
-    if not query_tokens:
-        return []
+    query_embedding = generate_embedding(query)
+    
     docs = db.query(models.Item).filter(models.Item.type == "vault_file", models.Item.image_url.is_not(None)).all()
     ranked = []
+    
+    query_tokens = { token for token in normalize_search_text(query).split() if len(token) > 2 and token not in VAULT_MATCH_STOPWORDS }
+    if not query_tokens:
+        query_tokens = { token for token in normalize_search_text(query).split() if len(token) > 2 and token not in {"the", "this", "that", "please", "to", "from"} }
+
     for doc in docs:
+        score = 0
+        confidence = 0.0
+        
+        if doc.embedding and query_embedding and any(query_embedding):
+            try:
+                dot = sum(a * b for a, b in zip(doc.embedding, query_embedding))
+                mag1 = sum(a * a for a in doc.embedding) ** 0.5
+                mag2 = sum(b * b for b in query_embedding) ** 0.5
+                similarity = dot / (mag1 * mag2) if mag1 and mag2 else 0
+                score = similarity * 10
+                confidence = max(0.0, min(1.0, similarity))
+            except Exception:
+                pass
+                
         haystack = normalize_search_text(" ".join([doc.title or "", doc.subtitle or "", doc.body or "", doc.workspace or ""]))
         matched_tokens = sorted(token for token in query_tokens if token in haystack)
-        score = len(matched_tokens)
-        if score > 0:
-            ranked.append(
-                {
-                    "doc": doc,
-                    "score": score,
-                    "confidence": min(1.0, score / max(len(query_tokens), 1)),
-                    "matched_tokens": matched_tokens,
-                }
-            )
+        
+        if not confidence:
+            score = len(matched_tokens)
+            confidence = min(1.0, score / max(len(query_tokens), 1)) if query_tokens else 0.0
+
+        if score > 0 or confidence > 0.3:
+            ranked.append({
+                "doc": doc,
+                "score": score,
+                "confidence": confidence,
+                "matched_tokens": matched_tokens,
+            })
+            
     return sorted(ranked, key=lambda match: (match["score"], len(match["doc"].title or "")), reverse=True)
 
 
@@ -691,22 +731,11 @@ async def plan_assistant_tool_with_llm(message: str, history: list) -> Optional[
         *recent_history,
         {"role": "user", "content": message},
     ]
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "openai/gpt-4o-mini", "messages": messages_payload, "temperature": 0},
-                timeout=20.0,
-            )
-    except Exception as exc:
-        logger.warning("Assistant tool planner failed: %s", exc)
-        return None
-    if resp.status_code != 200:
-        logger.warning("Assistant tool planner API failed: %s %s", resp.status_code, resp.text)
+    content = await call_llm_async(model="openai/gpt-4o-mini", messages=messages_payload, temperature=0.0)
+    if not content:
         return None
 
-    planned = parse_json_object(resp.json().get("choices", [{}])[0].get("message", {}).get("content", ""))
+    planned = parse_json_object(content)
     if not planned:
         return None
     tool_name = str(planned.get("tool") or "none").strip()
@@ -1969,25 +1998,14 @@ async def request_vault_vision_extraction(prompt: str, vision_images: list[str],
     last_error = ""
     for attempt in range(1, max_attempts + 1):
         try:
-            async with httpx.AsyncClient() as client:
-                content = [{"type": "text", "text": prompt}]
-                for image_b64 in vision_images:
-                    content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}})
-                payload = {
-                    "model": "openai/gpt-4o",
-                    "messages": [{"role": "user", "content": content}],
-                }
-                headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-                response = await client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=60.0)
-                if response.status_code == 200:
-                    data = response.json()
-                    text = data["choices"][0]["message"]["content"]
-                    if (text or "").strip():
-                        return text, attempt, ""
-                    last_error = "Vision returned empty content"
-                else:
-                    last_error = f"OpenRouter returned {response.status_code}"
-                    logger.warning("AI error: %s %s", response.status_code, response.text)
+            content = [{"type": "text", "text": prompt}]
+            for image_b64 in vision_images:
+                content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}})
+            
+            text = await call_llm_async(model="openai/gpt-4o", messages=[{"role": "user", "content": content}])
+            if text and text.strip():
+                return text, attempt, ""
+            last_error = "Vision returned empty content"
         except Exception as exc:
             last_error = str(exc)
             logger.exception("AI exception while processing vault upload attempt %s: %s", attempt, exc)
@@ -2565,9 +2583,17 @@ def run_scheduled_backup():
         logger.exception("Daily backup failed: %s", exc)
 
 
-scheduler.add_job(check_expirations_and_notify, CronTrigger(hour=8, minute=0))
-scheduler.add_job(check_due_reminders_and_notify, CronTrigger(minute="*/5"))
-scheduler.add_job(run_scheduled_backup, CronTrigger(hour=2, minute=0))
+@celery_app.task
+def check_expirations_and_notify_task():
+    check_expirations_and_notify()
+
+@celery_app.task
+def check_due_reminders_task():
+    check_due_reminders_and_notify()
+
+@celery_app.task
+def run_scheduled_backup_task():
+    run_scheduled_backup()
 
 @app.post("/api/vault_upload")
 async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Company"), db: Session = Depends(get_db)):
@@ -2621,6 +2647,7 @@ async def vault_upload(file: UploadFile = File(...), workspace: str = Form("Comp
         image_url=image_url,
         workspace=workspace,
         tags=owner or None,
+        embedding=generate_embedding(index_text)
     )
     db.add(vault_item)
 
