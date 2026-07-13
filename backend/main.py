@@ -88,6 +88,7 @@ DELETE_WORD_RE = re.compile(r"\b(delete|remove|trash)\b", re.IGNORECASE)
 DOCUMENT_WORD_RE = re.compile(r"\b(vault|document|doc|file|pdf|contract|scan)\b", re.IGNORECASE)
 RENAME_RE = re.compile(r"\brename\b.*?\bto\s+(.+)$", re.IGNORECASE)
 CREATE_TASK_RE = re.compile(r"\b(?:create|add|new)\s+task\s+(.+)$", re.IGNORECASE)
+QUICK_TASK_RE = re.compile(r"^\s*(?:task|todo):\s*(.+)$", re.IGNORECASE)
 CREATE_NOTE_RE = re.compile(r"\b(?:create|add|new)\s+note\s+(.+)$", re.IGNORECASE)
 CREATE_EXPENSE_RE = re.compile(r"\b(?:create|add|new)\s+expense\s+(.+)$", re.IGNORECASE)
 REMINDER_RE = re.compile(r"\b(?:remind me to|create reminder to|add reminder to|schedule)\s+(.+)$", re.IGNORECASE)
@@ -98,6 +99,79 @@ GENERIC_EMAIL_RE = re.compile(
     re.IGNORECASE,
 )
 VAULT_DELETE_PHRASE = os.getenv("VAULT_DELETE_PHRASE")
+
+ASSISTANT_TOOLS = [
+    {
+        "name": "create_task",
+        "description": "Create a task in the current personal workspace.",
+        "risk_level": 1,
+        "requires_confirmation": False,
+        "parameters": {"title": "string", "due": "YYYY-MM-DD optional", "priority": "string optional"},
+    },
+    {
+        "name": "mark_task_done",
+        "description": "Mark one unambiguous task as done.",
+        "risk_level": 2,
+        "requires_confirmation": False,
+        "parameters": {"query": "string"},
+    },
+    {
+        "name": "mark_task_open",
+        "description": "Mark one unambiguous task as open.",
+        "risk_level": 2,
+        "requires_confirmation": False,
+        "parameters": {"query": "string"},
+    },
+    {
+        "name": "create_reminder",
+        "description": "Create a dated or timed reminder.",
+        "risk_level": 1,
+        "requires_confirmation": False,
+        "parameters": {"title": "string", "date": "YYYY-MM-DD optional", "time": "HH:MM optional"},
+    },
+    {
+        "name": "create_note",
+        "description": "Create a note with title and body.",
+        "risk_level": 1,
+        "requires_confirmation": False,
+        "parameters": {"title": "string", "body": "string"},
+    },
+    {
+        "name": "create_expense",
+        "description": "Create an expense record.",
+        "risk_level": 1,
+        "requires_confirmation": False,
+        "parameters": {"amount": "number", "currency": "string", "item": "string"},
+    },
+    {
+        "name": "rename_vault_document",
+        "description": "Rename a vault document while preserving file extension.",
+        "risk_level": 2,
+        "requires_confirmation": False,
+        "parameters": {"query": "string", "new_title": "string"},
+    },
+    {
+        "name": "delete_vault_document",
+        "description": "Delete a vault document after the security phrase is provided.",
+        "risk_level": 3,
+        "requires_confirmation": True,
+        "parameters": {"query": "string", "security_phrase": "string"},
+    },
+    {
+        "name": "send_email",
+        "description": "Send a generic email after token confirmation.",
+        "risk_level": 3,
+        "requires_confirmation": True,
+        "parameters": {"to": "email", "subject": "string", "body": "string"},
+    },
+    {
+        "name": "send_vault_document_email",
+        "description": "Send a vault document link by email.",
+        "risk_level": 3,
+        "requires_confirmation": False,
+        "parameters": {"query": "string", "to": "email"},
+    },
+]
 
 
 def normalize_search_text(value: str) -> str:
@@ -267,6 +341,11 @@ def audit_to_dict(row: models.AssistantAudit) -> dict:
         "summary": row.summary,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+
+
+@app.get("/api/assistant/tools")
+def read_assistant_tools():
+    return ASSISTANT_TOOLS
 
 
 @app.get("/api/assistant/audit")
@@ -530,7 +609,7 @@ def handle_document_rename_request(message: str, history: list, db: Session) -> 
 
 
 def handle_assistant_crud_request(message: str, db: Session) -> Optional[dict]:
-    task_match = CREATE_TASK_RE.search(message or "")
+    task_match = CREATE_TASK_RE.search(message or "") or QUICK_TASK_RE.search(message or "")
     if task_match:
         raw_title = task_match.group(1).strip()
         due = parse_due_date(raw_title)

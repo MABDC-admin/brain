@@ -224,3 +224,20 @@ def test_assistant_audits_actions_and_stops_ambiguous_task_updates():
     tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
     duplicate_tasks = [item for item in tasks if item["title"].startswith("audit duplicate")]
     assert all('"status": "done"' not in (item.get("body") or "") for item in duplicate_tasks)
+
+
+def test_assistant_exposes_approved_tool_registry_and_quick_task():
+    tools = client.get("/api/assistant/tools")
+    assert tools.status_code == 200
+    tool_names = {tool["name"] for tool in tools.json()}
+    assert {"create_task", "create_reminder", "send_email", "rename_vault_document"}.issubset(tool_names)
+    send_email = next(tool for tool in tools.json() if tool["name"] == "send_email")
+    assert send_email["risk_level"] == 3
+    assert send_email["requires_confirmation"] is True
+
+    created = chat("task: review phase three tools")
+    assert created.status_code == 200
+    assert "Created task" in created.json()["reply"]
+
+    tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
+    assert any(item["title"] == "review phase three tools" for item in tasks)
