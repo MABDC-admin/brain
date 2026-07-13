@@ -6,7 +6,6 @@ BACKEND_VENV="${TMPDIR:-/tmp}/brain-verify-venv"
 
 cd "$ROOT_DIR"
 
-python3 tests/audit_regressions.py
 python3 -m py_compile backend/*.py tests/*.py
 
 if [[ ! -x "$BACKEND_VENV/bin/python" ]]; then
@@ -15,6 +14,7 @@ if [[ ! -x "$BACKEND_VENV/bin/python" ]]; then
 fi
 
 "$BACKEND_VENV/bin/python" -m pip install -q -r backend/requirements.txt
+"$BACKEND_VENV/bin/python" -m pytest -q -s tests/audit_regressions.py
 "$BACKEND_VENV/bin/python" -m pytest -q -s tests/backend_smoke.py
 
 npm --prefix frontend run lint

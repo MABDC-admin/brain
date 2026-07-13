@@ -241,3 +241,67 @@ def test_assistant_exposes_approved_tool_registry_and_quick_task():
 
     tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
     assert any(item["title"] == "review phase three tools" for item in tasks)
+
+
+def test_assistant_llm_planner_can_create_task(monkeypatch):
+    async def fake_plan(message, history):
+        return {
+            "tool": "create_task",
+            "arguments": {"title": "review natural language planner", "due": "", "priority": "high"},
+            "confidence": 0.92,
+        }
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+
+    created = chat("please remember that the natural language planner needs review")
+    assert created.status_code == 200
+    assert "Created task" in created.json()["reply"]
+
+    tasks = client.get("/items/type/task", params={"workspace": "Personal"}).json()
+    assert any(item["title"] == "review natural language planner" for item in tasks)
+
+    audit_rows = client.get("/api/assistant/audit").json()
+    assert any(row["action"] == "create_task" and row["status"] == "completed" for row in audit_rows)
+
+
+def test_assistant_llm_planner_keeps_email_behind_confirmation(monkeypatch):
+    sent = []
+
+    async def fake_plan(message, history):
+        return {
+            "tool": "send_email",
+            "arguments": {"to": "planner@example.com", "subject": "Planner", "body": "Planner body"},
+            "confidence": 0.93,
+        }
+
+    def fake_send(to_email, subject, body):
+        sent.append({"to": to_email, "subject": subject, "body": body})
+        return True, "sent"
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+    monkeypatch.setattr(main, "send_generic_email", fake_send, raising=False)
+
+    draft = chat("tell the planner contact about the update")
+    assert draft.status_code == 200
+    assert "Confirm send email to planner@example.com" in draft.json()["reply"]
+    assert sent == []
+
+    token = draft.json()["reply"].split("confirm ", 1)[1].split("`", 1)[0]
+    confirm = chat(f"confirm {token}")
+    assert confirm.status_code == 200
+    assert confirm.json()["reply"] == "Sent email to planner@example.com."
+    assert sent == [{"to": "planner@example.com", "subject": "Planner", "body": "Planner body"}]
+
+
+def test_assistant_llm_planner_rejects_unapproved_tool(monkeypatch):
+    async def fake_plan(message, history):
+        return {"tool": "run_shell", "arguments": {"command": "rm -rf /"}, "confidence": 0.99}
+
+    monkeypatch.setattr(main, "plan_assistant_tool_with_llm", fake_plan, raising=False)
+
+    response = chat("please do something unsafe")
+    assert response.status_code == 200
+    assert "No API key" in response.json()["reply"]
+
+    audit_rows = client.get("/api/assistant/audit").json()
+    assert not any(row["action"] == "run_shell" for row in audit_rows)

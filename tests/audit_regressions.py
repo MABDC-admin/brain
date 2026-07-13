@@ -171,6 +171,18 @@ def test_backend_smoke_uses_isolated_database() -> None:
     assert 'os.getenv("SQLALCHEMY_DATABASE_URL"' in database
 
 
+def test_assistant_llm_tool_planner_is_allowlisted_and_validated() -> None:
+    main = read("backend/main.py")
+    assert "ASSISTANT_TOOL_NAMES" in main
+    assert "plan_assistant_tool_with_llm" in main
+    assert "execute_assistant_tool" in main
+    assert "tool_name not in ASSISTANT_TOOL_NAMES" in main
+    assert "confidence < 0.65" in main
+    assert "Rejected unapproved assistant tool" in main
+    assert 'status="pending"' in main
+    assert "confirmation_token=token" in main
+
+
 def test_task_page_supports_editing_existing_tasks() -> None:
     task_page = read("frontend/src/pages/TaskPage.jsx")
     assert "editingTask" in task_page

@@ -172,6 +172,8 @@ ASSISTANT_TOOLS = [
         "parameters": {"query": "string", "to": "email"},
     },
 ]
+ASSISTANT_TOOL_NAMES = {tool["name"] for tool in ASSISTANT_TOOLS}
+ASSISTANT_TOOL_RISK = {tool["name"]: tool["risk_level"] for tool in ASSISTANT_TOOLS}
 
 
 def normalize_search_text(value: str) -> str:
@@ -341,6 +343,232 @@ def audit_to_dict(row: models.AssistantAudit) -> dict:
         "summary": row.summary,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+
+
+def parse_json_object(text: str) -> Optional[dict]:
+    clean = (text or "").strip()
+    if clean.startswith("```"):
+        clean = "\n".join(line for line in clean.splitlines() if not line.strip().startswith("```")).strip()
+    try:
+        parsed = json.loads(clean)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(clean[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+
+async def plan_assistant_tool_with_llm(message: str, history: list) -> Optional[dict]:
+    if not OPENROUTER_API_KEY:
+        return None
+
+    tool_prompt = json.dumps(ASSISTANT_TOOLS, ensure_ascii=False)
+    recent_history = []
+    for entry in history[-6:]:
+        if isinstance(entry, dict) and entry.get("role") in {"user", "assistant"}:
+            recent_history.append({"role": entry["role"], "content": str(entry.get("content", ""))[:1000]})
+
+    messages_payload = [
+        {
+            "role": "system",
+            "content": (
+                "You classify Command Brain user requests into exactly one approved tool. "
+                "Return only JSON with keys: tool, arguments, confidence. "
+                "Use tool='none' when the request is not a direct app action. "
+                "If the user asks to remember, track, add, create, schedule, mark, rename, delete, or email something, "
+                "choose the closest approved tool instead of saying you cannot do it. "
+                "Examples: 'remember I need to review payroll tomorrow' -> create_task; "
+                "'make a note that passport is renewed' -> create_note; "
+                "'mark visa renewal done' -> mark_task_done; "
+                "'rename labour contract to Dennis Labour contract' -> rename_vault_document; "
+                "'send hello to dennis@example.com' -> send_email. "
+                "Never invent tools or parameters. Approved tools: "
+                f"{tool_prompt}"
+            ),
+        },
+        *recent_history,
+        {"role": "user", "content": message},
+    ]
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+                json={"model": "openai/gpt-4o-mini", "messages": messages_payload, "temperature": 0},
+                timeout=20.0,
+            )
+    except Exception as exc:
+        logger.warning("Assistant tool planner failed: %s", exc)
+        return None
+    if resp.status_code != 200:
+        logger.warning("Assistant tool planner API failed: %s %s", resp.status_code, resp.text)
+        return None
+
+    planned = parse_json_object(resp.json().get("choices", [{}])[0].get("message", {}).get("content", ""))
+    if not planned:
+        return None
+    tool_name = str(planned.get("tool") or "none").strip()
+    confidence = planned.get("confidence", 0)
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        confidence = 0
+    if tool_name == "none" or tool_name not in ASSISTANT_TOOL_NAMES or confidence < 0.65:
+        return None
+    arguments = planned.get("arguments") if isinstance(planned.get("arguments"), dict) else {}
+    return {"tool": tool_name, "arguments": arguments, "confidence": confidence}
+
+
+def execute_assistant_tool(tool_name: str, arguments: dict, request_text: str, db: Session, *, source: str = "llm") -> Optional[dict]:
+    if tool_name not in ASSISTANT_TOOL_NAMES:
+        logger.warning("Rejected unapproved assistant tool: %s", tool_name)
+        return None
+
+    arguments = arguments if isinstance(arguments, dict) else {}
+    payload = {"source": source, "arguments": arguments}
+    risk_level = ASSISTANT_TOOL_RISK.get(tool_name, 0)
+
+    if tool_name == "create_task":
+        raw_title = str(arguments.get("title") or "").strip()
+        if not raw_title:
+            return {"reply": "Tell me the task title."}
+        due = str(arguments.get("due") or parse_due_date(raw_title) or "").strip()
+        priority = str(arguments.get("priority") or "").strip()
+        title = clean_action_title(raw_title)
+        subtitle = f"Task • Due {due}" if due else "Task • No due date"
+        body = dump_item_body({"subtasks": [], "priority": priority, "due": due, "status": "open"})
+        item = create_action_item(db, item_type="task", title=title, subtitle=subtitle, body=body)
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="task", target_id=item.id, summary=f"Created task {item.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Created task: {item.title}."}
+
+    if tool_name == "create_note":
+        title = str(arguments.get("title") or "").strip()
+        body = str(arguments.get("body") or title).strip()
+        if not title:
+            return {"reply": "Tell me the note title."}
+        item = create_action_item(db, item_type="note", title=title, subtitle="Note • Today", body=body)
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="note", target_id=item.id, summary=f"Created note {item.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Created note: {item.title}."}
+
+    if tool_name == "create_expense":
+        amount = arguments.get("amount")
+        try:
+            amount_text = f"{float(amount):.2f}"
+        except (TypeError, ValueError):
+            return {"reply": "Tell me the expense amount."}
+        currency = str(arguments.get("currency") or "AED").upper().strip()
+        item_name = str(arguments.get("item") or "Expense").strip()
+        title = f"{amount_text} {currency} {item_name}"
+        body = dump_item_body({"amount": amount_text, "currency": currency, "item": item_name, "date": str(arguments.get("date") or "")})
+        item = create_action_item(db, item_type="expense", title=title, subtitle="Other • Today", body=body)
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="expense", target_id=item.id, summary=f"Created expense {item.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Created expense: {item.title}."}
+
+    if tool_name == "create_reminder":
+        raw_title = str(arguments.get("title") or "").strip()
+        if not raw_title:
+            return {"reply": "Tell me what to remind you about."}
+        date = str(arguments.get("date") or parse_due_date(raw_title) or "").strip()
+        time_value = str(arguments.get("time") or parse_time(raw_title) or "").strip()
+        title = clean_action_title(raw_title)
+        subtitle = f"Reminder • Once{f' at {time_value}' if time_value else ''}"
+        body = dump_item_body({"date": date, "time": time_value, "repeat": "Once", "status": "open"})
+        item = create_action_item(db, item_type="reminder", title=title, subtitle=subtitle, body=body)
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="reminder", target_id=item.id, summary=f"Created reminder {item.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Created reminder: {item.title}."}
+
+    if tool_name in {"mark_task_done", "mark_task_open"}:
+        target_query = str(arguments.get("query") or "").strip()
+        if not target_query:
+            return {"reply": "Tell me which task to update."}
+        task, ambiguous = find_unique_best_item("task", target_query, db)
+        if ambiguous:
+            names = ", ".join(item.title for item in ambiguous[:5])
+            audit_action(db, action=tool_name, risk_level=risk_level, status="blocked", target_type="task", summary=f"Ambiguous task match: {names}", request_text=request_text, payload=payload)
+            return {"reply": f"I found multiple matching tasks: {names}. Please use a more specific title."}
+        if not task:
+            return {"reply": f"I could not find a task matching `{target_query}`."}
+        status = "done" if tool_name == "mark_task_done" else "open"
+        body = parse_item_body(task)
+        body["status"] = status
+        task.body = dump_item_body(body)
+        task.subtitle = re.sub(r"\s•\s(?:Done|Open)$", "", task.subtitle or "")
+        task.subtitle = f"{task.subtitle or 'Task'} • {'Done' if status == 'done' else 'Open'}"
+        db.commit()
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="task", target_id=task.id, summary=f"Marked task {status}: {task.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Marked task {status}: {task.title}."}
+
+    if tool_name == "rename_vault_document":
+        query = str(arguments.get("query") or "").strip()
+        new_title = str(arguments.get("new_title") or "").strip()
+        if not query or not new_title:
+            return {"reply": "Tell me which document to rename and the new name."}
+        doc = find_best_vault_document(query, db)
+        if not doc:
+            return {"reply": "I could not find which vault document to rename."}
+        old_title = doc.title
+        doc.title = preserve_file_extension(old_title, new_title)
+        db.commit()
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="vault_file", target_id=doc.id, summary=f"Renamed {old_title} to {doc.title}", request_text=request_text, payload=payload)
+        return {"reply": f"Renamed {old_title} to {doc.title}."}
+
+    if tool_name == "delete_vault_document":
+        query = str(arguments.get("query") or "").strip()
+        phrase = str(arguments.get("security_phrase") or "").strip()
+        if not query:
+            return {"reply": "Tell me the exact vault document to delete."}
+        doc = find_best_vault_document(query, db)
+        if not doc:
+            return {"reply": "I could not find the vault document to delete."}
+        if not VAULT_DELETE_PHRASE or not secrets.compare_digest(phrase, VAULT_DELETE_PHRASE):
+            return ask_for_vault_delete_phrase(doc)
+        doc_title = doc.title
+        doc_id = doc.id
+        delete_vault_document(doc, db)
+        audit_action(db, action=tool_name, risk_level=risk_level, status="completed", target_type="vault_file", target_id=doc_id, summary=f"Deleted {doc_title}", request_text=request_text, payload=payload)
+        return {"reply": f"Deleted {doc_title} from the vault."}
+
+    if tool_name == "send_email":
+        to_email = str(arguments.get("to") or "").strip()
+        subject = str(arguments.get("subject") or "").strip()
+        body = str(arguments.get("body") or "").strip()
+        if not EMAIL_RE.fullmatch(to_email) or not subject or not body:
+            return {"reply": "Tell me the email address, subject, and body before I prepare the email."}
+        token = secrets.token_urlsafe(6)
+        audit_action(
+            db,
+            action=tool_name,
+            risk_level=risk_level,
+            status="pending",
+            target_type="email",
+            summary=f"Pending email to {to_email}",
+            request_text=request_text,
+            payload={"to": to_email, "subject": subject, "body": body, "source": source},
+            confirmation_token=token,
+        )
+        return {"reply": f"Confirm send email to {to_email} with subject \"{subject}\"? Reply `confirm {token}` to send."}
+
+    if tool_name == "send_vault_document_email":
+        to_email = str(arguments.get("to") or "").strip()
+        query = str(arguments.get("query") or "").strip()
+        if not EMAIL_RE.fullmatch(to_email) or not query:
+            return {"reply": "Tell me which vault document to send and the recipient email."}
+        doc = find_best_vault_document(query, db)
+        if not doc:
+            return {"reply": f"I could not find the vault document to send to {to_email}."}
+        ok, detail = send_document_email(to_email, doc)
+        status = "completed" if ok else "failed"
+        summary = f"Sent {doc.title} to {to_email}" if ok else f"Could not send {doc.title} to {to_email}: {detail}"
+        audit_action(db, action=tool_name, risk_level=risk_level, status=status, target_type="vault_file", target_id=doc.id, summary=summary, request_text=request_text, payload=payload)
+        return {"reply": f"Sent {doc.title} to {to_email}." if ok else f"I found {doc.title}, but could not send it: {detail}"}
+
+    return None
 
 
 @app.get("/api/assistant/tools")
@@ -914,6 +1142,18 @@ async def chat_with_ai(request: Request, db: Session = Depends(get_db)):
     mail_intent = handle_document_email_request(message, history, db)
     if mail_intent:
         return mail_intent
+
+    planned_tool = await plan_assistant_tool_with_llm(message, history)
+    if planned_tool:
+        tool_intent = execute_assistant_tool(
+            planned_tool["tool"],
+            planned_tool.get("arguments", {}),
+            message,
+            db,
+            source="llm",
+        )
+        if tool_intent:
+            return tool_intent
 
     if not OPENROUTER_API_KEY:
         return {"reply": "⚠️ No API key. Go to Settings → AI & Privacy to add your OpenRouter key."}
