@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronLeft, Lock, Plus, Trash2, BookOpen } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const MOODS = ['😊', '😐', '😔', '🔥', '😴', '🤔', '💪', '❤️'];
@@ -93,6 +94,7 @@ function EntryEditor({ entry, onClose, onSave, onDelete }) {
   const [title] = useState(entry?.title || formatDate(new Date()));
   const [saving, setSaving] = useState(false);
   const textRef = useRef();
+  const { confirmDelete } = useDeleteConfirmation();
 
   useEffect(() => { textRef.current?.focus(); }, []);
 
@@ -115,7 +117,7 @@ function EntryEditor({ entry, onClose, onSave, onDelete }) {
         </div>
         <div className="flex items-center gap-2">
           {entry?.id && (
-            <button onClick={() => { onDelete(entry.id); onClose(); }} className="text-gray-600 hover:text-red-400 p-1"><Trash2 className="w-5 h-5"/></button>
+            <button onClick={() => confirmDelete({ title: 'Delete journal entry?', itemName: title, onConfirm: async () => { await onDelete(entry.id); onClose(); } })} className="text-gray-600 hover:text-red-400 p-1"><Trash2 className="w-5 h-5"/></button>
           )}
           <button onClick={handleSave} disabled={saving || !body.trim()}
             className="bg-pink-500 hover:bg-pink-400 disabled:opacity-40 text-white text-sm font-semibold px-4 py-1.5 rounded-xl transition-colors">

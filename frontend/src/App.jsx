@@ -6,6 +6,7 @@ import OnboardingScreen from './components/OnboardingScreen.jsx';
 import InstallBanner  from './components/InstallBanner.jsx';
 import SearchOverlay  from './components/SearchOverlay.jsx';
 import LockScreen     from './components/LockScreen.jsx';
+import { DeleteConfirmationProvider } from './components/DeleteConfirmationProvider.jsx';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const HomePage = React.lazy(() => import('./pages/HomePage.jsx'));
@@ -160,7 +161,9 @@ function AppInner() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AppInner/>
+      <DeleteConfirmationProvider>
+        <AppInner/>
+      </DeleteConfirmationProvider>
     </ThemeProvider>
   );
 }

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BellPlus, CalendarClock, HeartPulse, MoreVertical, Pill, Plus, Save, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const emptyForm = { medication: '', dosage: '', schedule: '', refillDate: '', notes: '' };
@@ -49,6 +50,7 @@ export default function HealthPage({ loadItems, workspace }) {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState({});
   const [saving, setSaving] = useState(false);
+  const { confirmDelete } = useDeleteConfirmation();
   const activeWorkspace = workspace || 'Personal';
 
   const load = useCallback(() => {
@@ -207,7 +209,7 @@ export default function HealthPage({ loadItems, workspace }) {
                 <div className="mt-3 flex gap-2">
                   <button onClick={() => saveEdit(item)} className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-teal-600 py-2 text-sm font-bold text-white"><Save className="h-4 w-4" />Save</button>
                   <button onClick={() => createReminder(item)} className="rounded-xl bg-amber-100 px-3 py-2 text-amber-700"><BellPlus className="h-4 w-4" /></button>
-                  <button onClick={() => deleteItem(item.id)} className="rounded-xl bg-red-50 px-3 py-2 text-red-500"><Trash2 className="h-4 w-4" /></button>
+                  <button onClick={() => confirmDelete({ title: 'Delete health item?', itemName: body.medication, onConfirm: () => deleteItem(item.id) })} className="rounded-xl bg-red-50 px-3 py-2 text-red-500"><Trash2 className="h-4 w-4" /></button>
                 </div>
               </div>
             );

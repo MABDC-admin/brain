@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { CalendarDays, Check, Flag, Plus, Target, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 
@@ -46,6 +47,7 @@ export default function GoalsPage({ loadItems, workspace }) {
   const [milestoneText, setMilestoneText] = useState({});
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const { confirmDelete } = useDeleteConfirmation();
   const activeWorkspace = workspace || 'Personal';
 
   const load = useCallback(async () => {
@@ -228,7 +230,7 @@ export default function GoalsPage({ loadItems, workspace }) {
                         <span>{targetLabel(goal.goalBody.targetDate)}</span>
                       </div>
                     </div>
-                    <button onClick={() => deleteGoal(goal)} className="text-slate-300 hover:text-red-500 shrink-0">
+                    <button onClick={() => confirmDelete({ title: 'Delete goal?', itemName: goal.title, onConfirm: () => deleteGoal(goal) })} className="text-slate-300 hover:text-red-500 shrink-0">
                       <Trash2 className="w-4 h-4"/>
                     </button>
                   </div>

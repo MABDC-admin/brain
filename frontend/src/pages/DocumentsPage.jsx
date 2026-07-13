@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bell, CalendarDays, CheckCircle2, FileText, Filter, MoreVertical, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
 import { DEFAULT_RULES, getExpiryReminderDraft } from '../modules/rules.js';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const FILTERS = ['all', 'expired', 'soon', 'valid'];
@@ -133,6 +134,7 @@ export default function DocumentsPage({ loadItems, workspace }) {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState('');
+  const { confirmDelete } = useDeleteConfirmation();
 
   const currentWorkspace = workspace || 'Personal';
   const load = useCallback(() => {
@@ -262,7 +264,7 @@ export default function DocumentsPage({ loadItems, workspace }) {
         )}
         <div className="space-y-3">
           {visible.map(document => (
-            <SwipeableRow key={document.id} onDelete={() => deleteDocument(document.id)}>
+            <SwipeableRow key={document.id} onDelete={() => deleteDocument(document.id)} deleteTitle="Delete document?" deleteItemName={document.title}>
               <div className="bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0">
@@ -281,7 +283,7 @@ export default function DocumentsPage({ loadItems, workspace }) {
                         <button onClick={() => setEditing(document)} className="text-slate-500 hover:text-sky-400" title="Edit document">
                           <Pencil className="w-4 h-4"/>
                         </button>
-                        <button onClick={() => deleteDocument(document.id)} className="text-slate-500 hover:text-red-400" title="Delete document">
+                        <button onClick={() => confirmDelete({ title: 'Delete document?', itemName: document.title, onConfirm: () => deleteDocument(document.id) })} className="text-slate-500 hover:text-red-400" title="Delete document">
                           <Trash2 className="w-4 h-4"/>
                         </button>
                       </div>

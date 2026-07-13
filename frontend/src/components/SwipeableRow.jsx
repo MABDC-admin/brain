@@ -1,12 +1,13 @@
 import React, { useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { useHaptic } from '../hooks/useHaptic.js';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 /**
  * SwipeableRow — swipe left to reveal delete button.
  * Works on touch (mobile) and mouse (desktop drag).
  */
-export default function SwipeableRow({ children, onDelete, disabled = false }) {
+export default function SwipeableRow({ children, onDelete, disabled = false, deleteTitle = 'Delete item?', deleteItemName = '' }) {
   const [offset,    setOffset]    = useState(0);
   const [revealed,  setRevealed]  = useState(false);
   const startX     = useRef(null);
@@ -14,6 +15,7 @@ export default function SwipeableRow({ children, onDelete, disabled = false }) {
   const THRESHOLD  = 55;
   const MAX_SWIPE  = 72;
   const haptic     = useHaptic();
+  const { confirmDelete } = useDeleteConfirmation();
 
   // ── Touch handlers ───────────────────────────────────────────────────────
   const onTouchStart = (e) => {
@@ -57,9 +59,15 @@ export default function SwipeableRow({ children, onDelete, disabled = false }) {
 
   const handleDelete = (e) => {
     e.stopPropagation();
-    haptic.delete();
     reset();
-    onDelete?.();
+    confirmDelete({
+      title: deleteTitle,
+      itemName: deleteItemName,
+      onConfirm: () => {
+        haptic.delete();
+        return onDelete?.();
+      },
+    });
   };
 
   return (

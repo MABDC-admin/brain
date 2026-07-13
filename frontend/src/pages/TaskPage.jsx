@@ -4,6 +4,7 @@ import SwipeableRow from '../components/SwipeableRow.jsx';
 import Confetti from '../components/Confetti.jsx';
 import UndoToast from '../components/UndoToast.jsx';
 import { useHaptic } from '../hooks/useHaptic.js';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const PRIORITY_COLOR = { High: 'text-red-500', Medium: 'text-orange-400', Low: 'text-blue-400' };
@@ -47,6 +48,7 @@ export default function TaskPage({ loadItems, workspace }) {
   const dragOverItem  = useRef(null);
   const longPressRef  = useRef(null);
   const haptic = useHaptic();
+  const { confirmDelete } = useDeleteConfirmation();
 
   const load = useCallback(() => {
     fetch(`${API}/items/type/task?workspace=${encodeURIComponent(workspace || 'Personal')}`)
@@ -90,8 +92,14 @@ export default function TaskPage({ loadItems, workspace }) {
   const toggleSelect  = (id) => setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   const markBulkDone  = () => { setDone(p => [...new Set([...p, ...selected])]); haptic.success(); setSelecting(false); setSelected([]); };
   const deleteBulk    = () => {
-    selected.forEach(id => deleteTask(id));
-    setSelecting(false); setSelected([]);
+    confirmDelete({
+      title: 'Delete selected tasks?',
+      itemName: `${selected.length} selected`,
+      onConfirm: () => {
+        selected.forEach(id => deleteTask(id));
+        setSelecting(false); setSelected([]);
+      },
+    });
   };
 
   const onLongPress = (id) => {
@@ -282,7 +290,7 @@ export default function TaskPage({ loadItems, workspace }) {
           const isOpen  = expanded === t.id;
           const isSel   = selected.includes(t.id);
           return (
-            <SwipeableRow key={t.id} onDelete={() => deleteTask(t.id)} disabled={selecting}>
+            <SwipeableRow key={t.id} onDelete={() => deleteTask(t.id)} disabled={selecting} deleteTitle="Delete task?" deleteItemName={t.title}>
               <div className={`bg-white border-b border-gray-100 transition-colors ${isSel ? 'bg-green-50' : ''}`}
                 draggable={!selecting}
                 onDragStart={() => handleDragStart(idx)}

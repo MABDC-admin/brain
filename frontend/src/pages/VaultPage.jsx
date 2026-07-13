@@ -311,7 +311,7 @@ export default function VaultPage({ workspace }) {
         ) : (
           <div className="space-y-3">
             {files.map((f) => (
-              <SwipeableRow key={f.id} onDelete={() => deleteFile(f.id)}>
+              <SwipeableRow key={f.id} onDelete={() => deleteFile(f.id)} deleteTitle="Delete vault file?" deleteItemName={f.title}>
                 <div className="bg-[#14151b] border border-[#2a2b36] rounded-2xl p-4 flex items-center gap-4 group cursor-pointer"
                   onClick={() => openPreview(f)}>
                   <div className="w-12 h-12 rounded-xl bg-[#0b0c10] border border-[#2a2b36] flex items-center justify-center shrink-0">

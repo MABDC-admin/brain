@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Search, MoreVertical, Pin, X, Trash2, ChevronLeft, Plus, Share2, QrCode } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const TABS = ['ALL', 'PINNED', 'TAGS'];
 
 function NoteEditor({ note, onClose, onDelete }) {
   const [showQr, setShowQr] = React.useState(false);
+  const { confirmDelete } = useDeleteConfirmation();
   const shareText = `${note.title}\n${note.body || ''}`.trim();
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(shareText)}&size=220x220&bgcolor=0b0c10&color=a5b4fc`;
 
@@ -30,7 +32,7 @@ function NoteEditor({ note, onClose, onDelete }) {
         <button onClick={() => setShowQr(v => !v)} className={`ml-3 transition-colors ${showQr ? 'text-indigo-400' : 'text-gray-600 hover:text-indigo-400'}`} title="Show QR code">
           <QrCode className="w-5 h-5"/>
         </button>
-        <button onClick={() => onDelete(note.id)} className="text-gray-600 hover:text-red-400 ml-3 transition-colors">
+        <button onClick={() => confirmDelete({ title: 'Delete note?', itemName: note.title, onConfirm: () => onDelete(note.id) })} className="text-gray-600 hover:text-red-400 ml-3 transition-colors">
           <Trash2 className="w-5 h-5"/>
         </button>
       </div>
@@ -163,7 +165,7 @@ export default function NotePage({ loadItems, workspace }) {
         )}
         <div className="space-y-2">
           {visible.map((note) => (
-            <SwipeableRow key={note.id} onDelete={() => deleteNote(note.id)}>
+            <SwipeableRow key={note.id} onDelete={() => deleteNote(note.id)} deleteTitle="Delete note?" deleteItemName={note.title}>
               <div onClick={() => setSelectedNote(note)}
                 className="bg-[#14151b] rounded-2xl px-4 py-4 border border-[#2a2b36] cursor-pointer hover:bg-[#1a1b23] transition-all">
                 <div className="flex items-start justify-between mb-1">

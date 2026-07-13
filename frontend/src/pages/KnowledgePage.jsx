@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BookOpen, Filter, MoreVertical, Plus, Save, Search, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const STATUSES = ['learning', 'reviewing', 'mastered'];
@@ -37,6 +38,7 @@ export default function KnowledgePage({ loadItems, workspace }) {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState({});
   const [saving, setSaving] = useState(false);
+  const { confirmDelete } = useDeleteConfirmation();
 
   const activeWorkspace = workspace || 'Personal';
 
@@ -191,7 +193,7 @@ export default function KnowledgePage({ loadItems, workspace }) {
                       ))}
                     </div>
                   </div>
-                  <button onClick={() => deleteItem(item.id)} className="rounded-full p-2 text-stone-300 hover:bg-red-50 hover:text-red-500">
+                  <button onClick={() => confirmDelete({ title: 'Delete knowledge item?', itemName: body.source, onConfirm: () => deleteItem(item.id) })} className="rounded-full p-2 text-stone-300 hover:bg-red-50 hover:text-red-500">
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>

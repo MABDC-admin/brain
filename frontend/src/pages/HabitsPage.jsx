@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Flame, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 
@@ -52,6 +53,7 @@ export default function HabitsPage({ loadItems, workspace }) {
   const [title, setTitle] = useState('');
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const { confirmDelete } = useDeleteConfirmation();
   const activeWorkspace = workspace || 'Personal';
   const today = useMemo(() => todayKey(), []);
 
@@ -227,7 +229,7 @@ export default function HabitsPage({ loadItems, workspace }) {
                         <span>{habit.habitBody.streak}</span>
                       </div>
                       <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">streak</p>
-                      <button onClick={() => deleteHabit(habit)} className="mt-3 text-slate-300 hover:text-red-500">
+                      <button onClick={() => confirmDelete({ title: 'Delete habit?', itemName: habit.title, onConfirm: () => deleteHabit(habit) })} className="mt-3 text-slate-300 hover:text-red-500">
                         <Trash2 className="w-4 h-4"/>
                       </button>
                     </div>

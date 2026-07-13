@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BellPlus, CalendarDays, Check, MapPin, Plane, Plus, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const emptyForm = { destination: '', startDate: '', endDate: '', bookingRef: '', checklist: '' };
@@ -44,6 +45,7 @@ export default function TravelPage({ loadItems, workspace }) {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const { confirmDelete } = useDeleteConfirmation();
   const activeWorkspace = workspace || 'Personal';
 
   const load = useCallback(() => {
@@ -181,7 +183,7 @@ export default function TravelPage({ loadItems, workspace }) {
                     <p className="flex items-center gap-1 text-sm text-slate-500"><CalendarDays className="h-3.5 w-3.5" />{tripDateLabel(body)}</p>
                     {body.bookingRef && <p className="mt-1 text-xs font-bold text-blue-600">Ref {body.bookingRef}</p>}
                   </div>
-                  <button onClick={() => deleteItem(item.id)} className="rounded-xl bg-red-50 p-2 text-red-500"><Trash2 className="h-4 w-4" /></button>
+                  <button onClick={() => confirmDelete({ title: 'Delete trip?', itemName: body.destination, onConfirm: () => deleteItem(item.id) })} className="rounded-xl bg-red-50 p-2 text-red-500"><Trash2 className="h-4 w-4" /></button>
                 </div>
 
                 {body.checklist.length > 0 && (

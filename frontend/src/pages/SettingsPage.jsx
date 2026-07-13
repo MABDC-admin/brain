@@ -6,6 +6,7 @@ import {
   Download, RefreshCw, Smartphone
 } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme.js';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 
 // ── Persistent settings via localStorage ──────────────────────────────────────
@@ -373,6 +374,7 @@ function DataSyncPanel({ onBack }) {
   const [syncing,    setSyncing]    = useState(false);
   const [exporting,  setExporting]  = useState(false);
   const [exportDone, setExportDone] = useState('');
+  const { confirmDelete } = useDeleteConfirmation();
 
   const handleSync = () => { setSyncing(true); setTimeout(() => setSyncing(false), 2000); };
 
@@ -407,21 +409,28 @@ function DataSyncPanel({ onBack }) {
 
   const clearData = async () => {
     const workspace = localStorage.getItem('workspace') || 'Personal';
-    if (!window.confirm(`Delete all items in ${workspace}? This cannot be undone.`)) return;
-    try {
-      const token = getLS('clear_data_token', '') || window.prompt('Enter clear data token');
-      if (!token) return;
-      setLS('clear_data_token', token);
-      const result = await fetch(`${API}/api/items/clear-all?workspace=${encodeURIComponent(workspace)}`, {
-        method: 'DELETE',
-        headers: { 'X-Clear-Data-Token': token },
-      }).then(r => {
-        if (!r.ok) throw new Error('Clear failed');
-        return r.json();
-      });
-      setExportDone(`🗑️ ${result.deleted_count ?? 0} items deleted from ${result.workspace || workspace}`);
-      setTimeout(() => window.location.reload(), 1000);
-    } catch { setExportDone('❌ Clear failed'); setTimeout(() => setExportDone(''), 2000); }
+    confirmDelete({
+      title: 'Clear workspace data?',
+      itemName: workspace,
+      message: 'This deletes every item in this workspace after token verification.',
+      confirmLabel: 'Clear Data',
+      onConfirm: async () => {
+        try {
+          const token = getLS('clear_data_token', '') || window.prompt('Enter clear data token');
+          if (!token) return;
+          setLS('clear_data_token', token);
+          const result = await fetch(`${API}/api/items/clear-all?workspace=${encodeURIComponent(workspace)}`, {
+            method: 'DELETE',
+            headers: { 'X-Clear-Data-Token': token },
+          }).then(r => {
+            if (!r.ok) throw new Error('Clear failed');
+            return r.json();
+          });
+          setExportDone(`Deleted ${result.deleted_count ?? 0} items from ${result.workspace || workspace}`);
+          setTimeout(() => window.location.reload(), 1000);
+        } catch { setExportDone('Clear failed'); setTimeout(() => setExportDone(''), 2000); }
+      },
+    });
   };
 
   return (

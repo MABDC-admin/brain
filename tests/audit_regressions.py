@@ -214,6 +214,19 @@ def test_workspace_queries_are_url_encoded() -> None:
         assert needle in read(path)
 
 
+def test_delete_confirmation_uses_shared_ui() -> None:
+    dialog = read("frontend/src/components/DeleteConfirmationProvider.jsx")
+    hook = read("frontend/src/hooks/useDeleteConfirmation.js")
+    app = read("frontend/src/App.jsx")
+    swipe = read("frontend/src/components/SwipeableRow.jsx")
+    settings = read("frontend/src/pages/SettingsPage.jsx")
+    assert "createContext" in hook
+    assert "useDeleteConfirmation" in hook
+    assert "DeleteConfirmationProvider" in app
+    assert "confirmDelete" in swipe
+    assert "window.confirm" not in settings
+
+
 if __name__ == "__main__":
     tests = [
         test_no_hardcoded_localhost_api_urls,
@@ -238,6 +251,7 @@ if __name__ == "__main__":
         test_mobile_layout_removes_desktop_phone_frame,
         test_workspace_selector_is_clickable_on_touch_devices,
         test_workspace_queries_are_url_encoded,
+        test_delete_confirmation_uses_shared_ui,
     ]
 
     failures = []

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, MoreVertical, FolderOpen, Check, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const getLS = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } };
 const setLS = (k, v)   => localStorage.setItem(k, JSON.stringify(v));
@@ -22,6 +23,7 @@ export default function ProjectPage() {
   const [showAdd,  setShowAdd]  = useState(false);
   const [selected, setSelected] = useState(null);
   const [form,     setForm]     = useState({ name: '', color: '#6366f1', status: 'Planning', desc: '' });
+  const { confirmDelete } = useDeleteConfirmation();
 
   const save = () => {
     if (!form.name.trim()) return;
@@ -170,7 +172,7 @@ export default function ProjectPage() {
         <div className="absolute inset-0 z-50 bg-[#0b0c10] flex flex-col page-enter">
           <div className="px-5 pt-6 pb-4 border-b border-[#1a1b23] shrink-0 flex items-center justify-between">
             <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-white"><X className="w-6 h-6"/></button>
-            <button onClick={() => deleteProject(selected.id)} className="text-gray-600 hover:text-red-400 transition-colors"><Trash2 className="w-5 h-5"/></button>
+            <button onClick={() => confirmDelete({ title: 'Delete project?', itemName: selected.name, onConfirm: () => deleteProject(selected.id) })} className="text-gray-600 hover:text-red-400 transition-colors"><Trash2 className="w-5 h-5"/></button>
           </div>
           <div className="flex-1 overflow-y-auto scrollbar-hide p-5">
             <div className="flex items-center gap-4 mb-6">

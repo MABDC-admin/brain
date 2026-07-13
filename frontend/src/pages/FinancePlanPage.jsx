@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarClock, DollarSign, PiggyBank, Plus, Save, Target, Trash2, X } from 'lucide-react';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const emptyForm = { title: '', targetAmount: '', currentAmount: '', dueDate: '', notes: '' };
@@ -59,6 +60,7 @@ export default function FinancePlanPage({ loadItems, workspace }) {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState({});
   const [saving, setSaving] = useState(false);
+  const { confirmDelete } = useDeleteConfirmation();
   const activeWorkspace = workspace || 'Personal';
 
   const load = useCallback(() => {
@@ -226,7 +228,7 @@ export default function FinancePlanPage({ loadItems, workspace }) {
                 <div className="mt-3 flex gap-2">
                   <button onClick={() => saveCurrent(item)} className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-emerald-800 py-2 text-sm font-bold text-white"><Save className="h-4 w-4" />Save</button>
                   <div className="flex items-center gap-1 rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-500"><CalendarClock className="h-4 w-4" />{body.dueDate || 'No date'}</div>
-                  <button onClick={() => deleteItem(item.id)} className="rounded-xl bg-red-50 px-3 py-2 text-red-500"><Trash2 className="h-4 w-4" /></button>
+                  <button onClick={() => confirmDelete({ title: 'Delete financial target?', itemName: item.title, onConfirm: () => deleteItem(item.id) })} className="rounded-xl bg-red-50 px-3 py-2 text-red-500"><Trash2 className="h-4 w-4" /></button>
                 </div>
               </div>
             );

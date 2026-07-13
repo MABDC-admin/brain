@@ -111,7 +111,7 @@ export default function ReminderPage({ loadItems, workspace }) {
           </div>
         )}
         {reminders.map((r) => (
-          <SwipeableRow key={r.id} onDelete={() => { fetch(`${API}/items/${r.id}`, { method: 'DELETE' }).catch(()=>{}); setReminders(p => p.filter(x => x.id !== r.id)); }}>
+          <SwipeableRow key={r.id} onDelete={() => { fetch(`${API}/items/${r.id}`, { method: 'DELETE' }).catch(()=>{}); setReminders(p => p.filter(x => x.id !== r.id)); }} deleteTitle="Delete reminder?" deleteItemName={r.title}>
             <div className="bg-white rounded-2xl px-4 py-3 flex items-center shadow-sm mb-3">
               <Bell className="w-5 h-5 text-orange-400 mr-3 shrink-0"/>
               <div className="flex-1 min-w-0">

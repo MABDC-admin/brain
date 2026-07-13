@@ -186,7 +186,7 @@ export default function ExpensePage({ loadItems, workspace }) {
       ) : (
         <div className="flex-1 overflow-y-auto scrollbar-hide px-5">
           {expenses.map((e) => (
-            <SwipeableRow key={e.id} onDelete={() => deleteExpense(e.id, { stopPropagation: () => {} })}>
+            <SwipeableRow key={e.id} onDelete={() => deleteExpense(e.id, { stopPropagation: () => {} })} deleteTitle="Delete expense?" deleteItemName={e.title}>
               <div className="flex items-center py-3 border-b border-[#1a1b23] bg-[#0b0c10]">
                 <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg mr-4 shrink-0"
                   style={{ backgroundColor: (CAT_COLORS[parseCategory(e.subtitle)] || '#9ca3af') + '22' }}>

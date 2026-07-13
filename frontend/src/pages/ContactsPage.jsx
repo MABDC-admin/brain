@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bell, CalendarClock, Mail, MoreVertical, Pencil, Phone, Plus, Search, Trash2, User, X } from 'lucide-react';
 import SwipeableRow from '../components/SwipeableRow.jsx';
+import { useDeleteConfirmation } from '../hooks/useDeleteConfirmation.js';
 
 const API = import.meta.env.PROD ? 'https://brain.mabdc.com' : 'https://brain.mabdc.com';
 const EMPTY_FORM = { title: '', phone: '', email: '', notes: '', lastContacted: '', nextFollowUp: '' };
@@ -107,6 +108,7 @@ export default function ContactsPage({ loadItems, workspace }) {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState('');
+  const { confirmDelete } = useDeleteConfirmation();
 
   const currentWorkspace = workspace || 'Personal';
   const load = useCallback(() => {
@@ -225,7 +227,7 @@ export default function ContactsPage({ loadItems, workspace }) {
         )}
         <div className="space-y-3">
           {visible.map(contact => (
-            <SwipeableRow key={contact.id} onDelete={() => deleteContact(contact.id)}>
+            <SwipeableRow key={contact.id} onDelete={() => deleteContact(contact.id)} deleteTitle="Delete contact?" deleteItemName={contact.title}>
               <div className="bg-white border border-gray-100 rounded-2xl px-4 py-4 shadow-sm">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-full bg-cyan-50 text-cyan-700 flex items-center justify-center shrink-0">
@@ -246,7 +248,7 @@ export default function ContactsPage({ loadItems, workspace }) {
                         <button onClick={() => setEditing(contact)} className="text-gray-400 hover:text-cyan-600" title="Edit contact">
                           <Pencil className="w-4 h-4"/>
                         </button>
-                        <button onClick={() => deleteContact(contact.id)} className="text-gray-400 hover:text-red-500" title="Delete contact">
+                        <button onClick={() => confirmDelete({ title: 'Delete contact?', itemName: contact.title, onConfirm: () => deleteContact(contact.id) })} className="text-gray-400 hover:text-red-500" title="Delete contact">
                           <Trash2 className="w-4 h-4"/>
                         </button>
                       </div>
