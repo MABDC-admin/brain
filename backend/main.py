@@ -553,6 +553,38 @@ def preserve_file_extension(old_title: str, new_title: str) -> str:
     return new_title.strip()
 
 
+FILENAME_UNSAFE_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def clean_filename_stem(value: str, fallback: str = "Document") -> str:
+    stem = os.path.splitext(os.path.basename(value or ""))[0]
+    stem = re.sub(r"^processing\s+", "", stem, flags=re.IGNORECASE)
+    stem = FILENAME_UNSAFE_RE.sub(" ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" ._-")
+    return stem or fallback
+
+
+def owner_tokens(owner: str) -> set[str]:
+    return {
+        token
+        for token in normalize_search_text(owner).split()
+        if len(token) > 2 and token not in OWNER_TOKEN_STOPWORDS
+    }
+
+
+def normalized_vault_display_title(document_title: str, original_filename: str, owner: str = "") -> str:
+    original_basename = os.path.basename(original_filename or "")
+    fallback_stem = clean_filename_stem(original_basename, "Document")
+    stem = clean_filename_stem(document_title or fallback_stem, fallback_stem)
+    ext = os.path.splitext(original_basename)[1] or os.path.splitext(document_title or "")[1]
+    owner_clean = clean_filename_stem(owner, "")
+    if owner_clean:
+        title_tokens = set(normalize_search_text(stem).split())
+        if owner_tokens(owner_clean) and not (owner_tokens(owner_clean) & title_tokens):
+            stem = f"{owner_clean} - {stem}"
+    return f"{stem}{ext}" if ext else stem
+
+
 def parse_item_body(item: models.Item) -> dict:
     try:
         parsed = json.loads(item.body or "{}")
@@ -2050,9 +2082,9 @@ async def retry_vault_document_ocr(doc: models.Item, db: Session, request_text: 
     )
 
     old_title = doc.title
-    display_title = preserve_file_extension(old_title, extracted["document_title"] or old_title)
     category = extracted["category"] or "Document"
     owner = extracted.get("owner", "")
+    display_title = normalized_vault_display_title(extracted["document_title"] or old_title, old_title, owner)
     summary = extracted["summary"]
     index_text = build_vault_index_text(old_title, display_title, category, summary, extracted, pdf_text)
     doc.title = display_title
@@ -2962,9 +2994,9 @@ def process_vault_document_task(item_id: int, filename: str, filepath: str, mime
             vision_error=scan_error,
         )
 
-        display_title = preserve_file_extension(filename, extracted["document_title"] or filename)
         category = extracted["category"] or "Document"
         owner = extracted.get("owner", "")
+        display_title = normalized_vault_display_title(extracted["document_title"] or filename, filename, owner)
         expiry = extracted["expiry_date"] or "None"
         summary = extracted["summary"]
         index_text = build_vault_index_text(filename, display_title, category, summary, extracted, pdf_text)
