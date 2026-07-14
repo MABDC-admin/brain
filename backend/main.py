@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import html
+import io
 import json
 import logging
 import os
@@ -12,6 +13,8 @@ import secrets
 import shutil
 import tarfile
 import uuid
+import zipfile
+from xml.etree import ElementTree
 
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request, Form, Query, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -2050,6 +2053,12 @@ def vault_file_mime_type(path: str) -> str:
         return "image/jpeg"
     if lower.endswith(".png"):
         return "image/png"
+    if lower.endswith(".docx"):
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if lower.endswith(".xlsx"):
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if lower.endswith(".pptx"):
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     return "application/octet-stream"
 
 
@@ -2069,11 +2078,16 @@ async def retry_vault_document_ocr(doc: models.Item, db: Session, request_text: 
         pdf_text = extract_pdf_text(contents)
         vision_images = render_pdf_pages_for_vision(contents)
         vision_mime_type = "image/jpeg"
+    elif upload_path.lower().endswith((".docx", ".xlsx", ".pptx")):
+        pdf_text = extract_office_text(contents, upload_path)
     elif mime_type.startswith("image/"):
         vision_images = [base64.b64encode(contents).decode("utf-8")]
 
     prompt = vault_index_prompt(doc.title, pdf_text)
-    ocr_text, scan_attempts, scan_error = await request_vault_vision_extraction(prompt, vision_images, vision_mime_type)
+    if vision_images:
+        ocr_text, scan_attempts, scan_error = await request_vault_vision_extraction(prompt, vision_images, vision_mime_type)
+    else:
+        ocr_text, scan_attempts, scan_error = await request_vault_text_extraction(prompt)
     extracted = build_vault_scan_result(
         ocr_text=ocr_text,
         filename=doc.title,
@@ -2305,6 +2319,38 @@ def render_pdf_pages_for_vision(contents: bytes, max_pages: int = 3) -> list[str
     return images
 
 
+def extract_office_text(contents: bytes, filename: str) -> str:
+    lower = filename.lower()
+    prefixes = []
+    if lower.endswith(".docx"):
+        prefixes = ["word/document.xml", "word/header", "word/footer"]
+    elif lower.endswith(".xlsx"):
+        prefixes = ["xl/sharedStrings.xml", "xl/worksheets/"]
+    elif lower.endswith(".pptx"):
+        prefixes = ["ppt/slides/"]
+    else:
+        return ""
+    try:
+        parts = []
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            for name in archive.namelist():
+                if not any(name.startswith(prefix) for prefix in prefixes):
+                    continue
+                if not name.endswith(".xml"):
+                    continue
+                try:
+                    root = ElementTree.fromstring(archive.read(name))
+                except Exception:
+                    continue
+                text = " ".join(node.text.strip() for node in root.iter() if node.text and node.text.strip())
+                if text:
+                    parts.append(text)
+        return "\n".join(parts).strip()
+    except Exception as exc:
+        logger.warning("Office text extraction failed for %s: %s", filename, exc)
+        return ""
+
+
 def parse_vault_extraction(raw_text: str, filename: str, pdf_text: str = "") -> dict:
     fallback = {
         "document_title": os.path.splitext(filename)[0] or "Document",
@@ -2375,6 +2421,22 @@ async def request_vault_vision_extraction(prompt: str, vision_images: list[str],
         except Exception as exc:
             last_error = str(exc)
             logger.exception("AI exception while processing vault upload attempt %s: %s", attempt, exc)
+    return "", max_attempts, last_error
+
+
+async def request_vault_text_extraction(prompt: str, *, max_attempts: int = 2) -> tuple[str, int, str]:
+    if not OPENROUTER_API_KEY:
+        return "", 0, "AI unavailable"
+    last_error = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            text = await call_llm_async(model="openai/gpt-4o", messages=[{"role": "user", "content": prompt}])
+            if text and text.strip():
+                return text, attempt, ""
+            last_error = "Text extraction returned empty content"
+        except Exception as exc:
+            last_error = str(exc)
+            logger.exception("AI exception while processing vault text attempt %s: %s", attempt, exc)
     return "", max_attempts, last_error
 
 
@@ -2976,6 +3038,8 @@ def process_vault_document_task(item_id: int, filename: str, filepath: str, mime
             pdf_text = extract_pdf_text(contents)
             vision_images = render_pdf_pages_for_vision(contents)
             mime_type = "image/jpeg"
+        elif filename.lower().endswith((".docx", ".xlsx", ".pptx")):
+            pdf_text = extract_office_text(contents, filename)
         elif mime_type.startswith("image/"):
             vision_images = [base64.b64encode(contents).decode("utf-8")]
 
@@ -2983,9 +3047,14 @@ def process_vault_document_task(item_id: int, filename: str, filepath: str, mime
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        ocr_text, scan_attempts, scan_error = loop.run_until_complete(
-            request_vault_vision_extraction(prompt, vision_images, mime_type)
-        )
+        if vision_images:
+            ocr_text, scan_attempts, scan_error = loop.run_until_complete(
+                request_vault_vision_extraction(prompt, vision_images, mime_type)
+            )
+        else:
+            ocr_text, scan_attempts, scan_error = loop.run_until_complete(
+                request_vault_text_extraction(prompt)
+            )
 
         extracted = build_vault_scan_result(
             ocr_text=ocr_text,

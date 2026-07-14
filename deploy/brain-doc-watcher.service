@@ -1,0 +1,17 @@
+[Unit]
+Description=Command Brain Document Watcher
+After=network.target redis-server.service brain-celery-worker.service
+Requires=redis-server.service brain-celery-worker.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/app/backend
+Environment=PATH=/home/admin/app/backend/venv/bin
+Environment=WATCH_UPLOAD_DIR=/home/admin/app/backend/uploads
+ExecStart=/home/admin/app/backend/venv/bin/python /home/admin/app/backend/doc_watcher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
