@@ -682,6 +682,123 @@ def normalize_expiry_date(value: str) -> str:
     return raw
 
 
+def parse_expiry_date_value(value: str | None):
+    normalized = normalize_expiry_date(value or "None")
+    if not normalized or normalized.lower() == "none":
+        return None
+    formats = ["%Y-%m-%d", "%d %b %Y", "%d/%m/%Y", "%d-%m-%Y", "%B %d, %Y"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(normalized, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def document_is_expired(value: str | None, today=None) -> bool:
+    expiry_date = parse_expiry_date_value(value)
+    if not expiry_date:
+        return False
+    today = today or datetime.now().date()
+    return expiry_date < today
+
+
+def vault_owner_category_expiry(item: models.Item) -> tuple[str, str, str]:
+    body = parse_item_body(item)
+    subtitle_parts = (item.subtitle or "").split("•")
+    category = str(body.get("category") or (subtitle_parts[0].strip() if subtitle_parts else "") or "Document").strip()
+    owner = str(body.get("owner") or item.tags or (subtitle_parts[1].strip() if len(subtitle_parts) > 1 else "") or "").strip()
+    expiry = normalize_expiry_date(str(body.get("expiry_date") or item.expiry_date or "None"))
+    return owner, category, expiry
+
+
+def find_newer_replacement_document(item: models.Item, db: Session) -> Optional[models.Item]:
+    owner, category, expiry = vault_owner_category_expiry(item)
+    item_expiry = parse_expiry_date_value(expiry)
+    if not owner or not category or not item_expiry:
+        return None
+    owner_key = normalize_search_text(owner)
+    category_key = normalize_search_text(category)
+    candidates = db.query(models.Item).filter(models.Item.type == "vault_file", models.Item.id != item.id).all()
+    best = None
+    best_expiry = None
+    for candidate in candidates:
+        body = parse_item_body(candidate)
+        if body.get("archived") is True:
+            continue
+        candidate_owner, candidate_category, candidate_expiry_raw = vault_owner_category_expiry(candidate)
+        if normalize_search_text(candidate_owner) != owner_key:
+            continue
+        if normalize_search_text(candidate_category) != category_key:
+            continue
+        candidate_expiry = parse_expiry_date_value(candidate_expiry_raw)
+        if not candidate_expiry or candidate_expiry <= item_expiry:
+            continue
+        if best_expiry is None or candidate_expiry > best_expiry:
+            best = candidate
+            best_expiry = candidate_expiry
+    return best
+
+
+def archive_expired_document(item: models.Item, db: Session, replacement: Optional[models.Item] = None) -> dict:
+    body = parse_item_body(item)
+    previous_workspace = body.get("previous_workspace") or (item.workspace if item.workspace != "Archive" else "Company")
+    body["archived"] = True
+    body["archive_reason"] = "expired"
+    body["archived_at"] = body.get("archived_at") or datetime.utcnow().isoformat()
+    body["previous_workspace"] = previous_workspace
+    if replacement:
+        body["replacement_item_id"] = replacement.id
+        body["replacement_title"] = replacement.title
+    item.body = dump_item_body(body)
+    item.workspace = "Archive"
+    if item.subtitle and "Archived expired" not in item.subtitle:
+        item.subtitle = f"{item.subtitle} • Archived expired"
+    db.commit()
+    db.refresh(item)
+    return body
+
+
+def handle_expired_document_lifecycle(
+    item: models.Item,
+    db: Session,
+    *,
+    notify_to: str = "sottodennis@gmail.com",
+) -> dict:
+    owner, category, expiry = vault_owner_category_expiry(item)
+    if not document_is_expired(expiry):
+        return {"expired": False, "archived": False, "notified": False, "replacement_id": None}
+
+    replacement = find_newer_replacement_document(item, db)
+    body = archive_expired_document(item, db, replacement)
+    if replacement:
+        return {"expired": True, "archived": True, "notified": False, "replacement_id": replacement.id}
+    if body.get("expired_notified_at"):
+        return {"expired": True, "archived": True, "notified": False, "replacement_id": None}
+
+    ok, detail = send_expired_document_email(notify_to, item, expiry, owner, category)
+    body = parse_item_body(item)
+    if ok:
+        body["expired_notified_at"] = datetime.utcnow().isoformat()
+        body["expired_notification_to"] = notify_to
+    body["expired_notification_status"] = "sent" if ok else "failed"
+    body["expired_notification_detail"] = detail
+    item.body = dump_item_body(body)
+    db.commit()
+    audit_action(
+        db,
+        action="expired_document_lifecycle",
+        risk_level=2,
+        status="completed" if ok else "failed",
+        target_type="vault_file",
+        target_id=item.id,
+        summary=f"Archived expired document {item.title}" + (" and sent alert" if ok else f"; alert failed: {detail}"),
+        request_text="automatic expired document lifecycle",
+        payload={"to": notify_to, "expiry_date": expiry, "owner": owner, "category": category},
+    )
+    return {"expired": True, "archived": True, "notified": ok, "replacement_id": None}
+
+
 def clean_action_title(text: str) -> str:
     cleaned = re.sub(r"\b(today|tomorrow)\b", "", text or "", flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:at|on)\s+(20\d{2}-\d{2}-\d{2}|[01]?\d|2[0-3]):?[0-5]?\d?\s*(?:am|pm)?\b", "", cleaned, flags=re.IGNORECASE)
@@ -1612,6 +1729,61 @@ def send_document_email(to_email: str, item: models.Item) -> tuple[bool, str]:
     return send_documents_email(to_email, [item])
 
 
+def expired_document_email_html(item: models.Item, expiry_date: str, owner: str, category: str) -> str:
+    safe_title = html.escape(item.title or "Expired document")
+    safe_expiry = html.escape(expiry_date)
+    safe_owner = html.escape(owner or "Unknown owner")
+    safe_category = html.escape(category or "Document")
+    safe_url = html.escape(vault_document_url(item))
+    return f"""
+    <div style="font-family: Inter, Helvetica, Arial, sans-serif; max-width: 680px; margin: 0 auto; background: #fff7ed; padding: 36px; border-radius: 22px;">
+        <div style="background: #ffffff; border-radius: 20px; padding: 34px; border: 1px solid #fed7aa; box-shadow: 0 16px 42px rgba(154,52,18,0.10);">
+            <div style="display: inline-block; background: #fee2e2; color: #991b1b; padding: 8px 16px; border-radius: 999px; font-size: 12px; font-weight: 900; letter-spacing: .08em;">EXPIRED DOCUMENT</div>
+            <h1 style="color: #7f1d1d; font-size: 28px; line-height: 1.15; margin: 22px 0 12px;">{safe_title}</h1>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6; margin: 0 0 22px;">Command Brain detected an expired vault document and did not find a newer replacement for the same owner and document type.</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden;">
+                <tr><td style="padding: 12px 16px; color: #64748b; font-weight: 800;">Owner</td><td style="padding: 12px 16px; color: #111827; font-weight: 800;">{safe_owner}</td></tr>
+                <tr><td style="padding: 12px 16px; color: #64748b; font-weight: 800;">Category</td><td style="padding: 12px 16px; color: #111827; font-weight: 800;">{safe_category}</td></tr>
+                <tr><td style="padding: 12px 16px; color: #64748b; font-weight: 800;">Expired on</td><td style="padding: 12px 16px; color: #991b1b; font-weight: 900;">{safe_expiry}</td></tr>
+            </table>
+            <p style="color: #334155; font-size: 14px; line-height: 1.6; margin: 22px 0 0;">The expired file is attached to this email. Upload a renewed copy when available. The old document has been moved to Archive and can still be retrieved from the vault.</p>
+            <p style="margin: 18px 0 0;"><a href="{safe_url}" style="color: #7c2d12; font-weight: 900; text-decoration: none;">Open archived document</a></p>
+        </div>
+        <p style="text-align: center; color: #9a3412; font-size: 12px; margin-top: 20px;">Automated expiry alert sent by Command Brain AI.</p>
+    </div>
+    """
+
+
+def send_expired_document_email(to_email: str, item: models.Item, expiry_date: str, owner: str, category: str) -> tuple[bool, str]:
+    MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
+    if not MABDC_MAIL_API_KEY:
+        logger.info("[MOCK EXPIRED DOC EMAIL] To %s: %s expired on %s", to_email, item.title, expiry_date)
+        return True, "mock sent"
+    attachment = email_attachment_for_document(item)
+    payload = {
+        "to": to_email,
+        "from": "vault-ai@mabdc.org",
+        "subject": f"Expired document detected: {item.title}",
+        "html": expired_document_email_html(item, expiry_date, owner, category),
+    }
+    if attachment:
+        payload["attachments"] = [attachment]
+    try:
+        resp = httpx.post(
+            "https://api-mail.mabdc.com/v1/emails",
+            headers={"Authorization": f"Bearer {MABDC_MAIL_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code in [200, 202]:
+            return True, "sent"
+        logger.warning("Expired document email API failed: %s %s", resp.status_code, resp.text)
+        return False, f"Mail API returned {resp.status_code}."
+    except Exception as exc:
+        logger.exception("Expired document email failed: %s", exc)
+        return False, "Mail delivery failed."
+
+
 def send_generic_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
     MABDC_MAIL_API_KEY = os.getenv("MABDC_MAIL_API_KEY")
     if not MABDC_MAIL_API_KEY:
@@ -2110,6 +2282,8 @@ async def retry_vault_document_ocr(doc: models.Item, db: Session, request_text: 
     if expiry.lower() != "none" and len(expiry) > 4:
         doc.expiry_date = expiry
     db.commit()
+    if expiry.lower() != "none" and len(expiry) > 4 and document_is_expired(expiry):
+        handle_expired_document_lifecycle(doc, db)
     audit_action(
         db,
         action="retry_vault_ocr",
@@ -2873,28 +3047,22 @@ def send_expiry_email(to_email: str, doc_title: str, expiry_date: str, days_left
         logger.exception("Email failed: %s", e)
 
 
-def check_expirations_and_notify():
-    db = SessionLocal()
+def check_expirations_and_notify(db: Session | None = None):
+    owns_db = db is None
+    db = db or SessionLocal()
     try:
         items = db.query(models.Item).filter(models.Item.expiry_date.is_not(None)).all()
-        today = datetime.now()
+        today = datetime.now().date()
         for item in items:
             try:
-                # Assuming expiry_date is formatted as 'DD MMM YYYY' or 'YYYY-MM-DD'
-                # Let's try to parse common formats
-                exp_date_str = item.expiry_date.strip()
+                exp_date_str = normalize_expiry_date((item.expiry_date or "").strip())
                 if exp_date_str.lower() == 'none':
                     continue
-                exp_date = None
-                formats = ['%d %b %Y', '%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%B %d, %Y']
-                for fmt in formats:
-                    try:
-                        exp_date = datetime.strptime(exp_date_str, fmt)
-                        break
-                    except ValueError:
-                        pass
-                
+                exp_date = parse_expiry_date_value(exp_date_str)
                 if exp_date:
+                    if item.type == "vault_file" and exp_date < today:
+                        handle_expired_document_lifecycle(item, db)
+                        continue
                     delta = (exp_date - today).days
                     # Send notification on 30, 15, 10, 5 days
                     if delta in [30, 15, 10, 5]:
@@ -2902,7 +3070,8 @@ def check_expirations_and_notify():
             except Exception as e:
                 logger.warning("Error parsing expiry date for item %s: %s", item.id, e)
     finally:
-        db.close()
+        if owns_db:
+            db.close()
 
 
 def send_reminder_email(to_email: str, title: str, date_value: str, time_value: str = ""):
@@ -3078,6 +3247,9 @@ def process_vault_document_task(item_id: int, filename: str, filepath: str, mime
             vault_item.body = vault_body_payload(index_text, extracted, summary)
             vault_item.tags = owner or None
             vault_item.embedding = generate_embedding(index_text)
+            has_expiry = expiry.lower() != "none" and len(expiry) > 4
+            if has_expiry:
+                vault_item.expiry_date = expiry
 
             # Document Chunking
             chunks = chunk_text(index_text)
@@ -3091,7 +3263,7 @@ def process_vault_document_task(item_id: int, filename: str, filepath: str, mime
                 )
                 db.add(db_chunk)
 
-            if expiry.lower() != "none" and len(expiry) > 4:
+            if has_expiry and not document_is_expired(expiry):
                 reminder_item = models.Item(
                     type="reminder",
                     title=f"Renew: {display_title}",
@@ -3099,10 +3271,10 @@ def process_vault_document_task(item_id: int, filename: str, filepath: str, mime
                     workspace=workspace
                 )
                 db.add(reminder_item)
-                # Note: send_expiry_email blocks, which is fine in Celery
-                send_expiry_email("sottodennis@gmail.com", display_title, expiry)
 
             db.commit()
+            if has_expiry and document_is_expired(expiry):
+                handle_expired_document_lifecycle(vault_item, db)
             logger.info("Vault upload succeeded in background for %s", filename)
             
             # Notify UI
